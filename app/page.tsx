@@ -63,18 +63,23 @@ const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   servicing_payoff_quote: { running: "Getting payoff quote", done: "Payoff quote ready" },
   servicing_reschedule_preview: { running: "Checking reschedule rules", done: "Reschedule options ready" },
   servicing_refund_case: { running: "Opening refund case", done: "Refund case opened" },
+  servicing_triage_options: { running: "Checking upcoming payments", done: "Triaged your plans" },
 };
 
 /**
- * Demo openers are deliberately a "same-intent contrast" pair plus a payoff:
- *   - Peloton +14 days reschedule → ALLOWED (21-day window)
- *   - Nike +14 days reschedule    → BLOCKED (7-day window) → one-tap pay-early
- *   - Peloton payoff in full
- * Trying #1 then #2 back-to-back is what proves "approved vs denied based on
- * real plan state" — same phrasing, different policy outcome, same UI affordance.
+ * Demo openers — order matters. The first opener is the value-prop opener:
+ * a cash-flow constraint that no Manage-tab UI can answer because it
+ * requires reasoning ACROSS plans (sort by due date, check per-plan
+ * reschedule eligibility, recommend a specific move). That's the moment
+ * judges should see first.
+ *
+ * Then the same-intent-different-outcome pair: rescheduling Nike fails
+ * (cycle limit) → the card surfaces pay-early. Rescheduling another loan
+ * succeeds. That's the "approved vs denied based on real plan state"
+ * proof point.
  */
 const SUGGESTIONS = [
-  "Move my Peloton payment 2 weeks out",
+  "I'm going to be a little short this month — what are my options?",
   "Move my Nike payment 2 weeks out",
   "Pay off my Peloton loan in full",
   "Refund my Nike order",
@@ -563,15 +568,23 @@ export default function Home() {
           </button>
         </header>
 
-        {/* "Chat with Affirm Assistant" subheader */}
-        <div className="flex items-center px-5 py-2.5 border-b border-gray-200/80" style={{ background: BG }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8E8E93" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-3">
-            <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
-          <span className="flex-1 text-[15px] font-semibold text-[#0A2540]">Chat with Affirm Assistant</span>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="#8E8E93">
-            <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
-          </svg>
+        {/* "Chat with Affirm Assistant" subheader + value-prop subtitle.
+            The subtitle frames the agent's actual capability set so the
+            user (and any judge watching) doesn't ask "why not just use
+            the Manage tab?" — the answer is right there on screen. */}
+        <div className="px-5 py-2.5 border-b border-gray-200/80" style={{ background: BG }}>
+          <div className="flex items-center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8E8E93" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-3">
+              <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+            <span className="flex-1 text-[15px] font-semibold text-[#0A2540]">Chat with Affirm Assistant</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="#8E8E93">
+              <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
+            </svg>
+          </div>
+          <div className="text-[12px] text-gray-500 mt-1 leading-snug pl-[30px]">
+            Ask me anything about your plans — I can reschedule, help you pay off early, or figure out your best move.
+          </div>
         </div>
 
         <main ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
@@ -627,7 +640,7 @@ export default function Home() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send(input)}
-              placeholder="Pay off, reschedule, or pay early…"
+              placeholder="Reschedule, pay off, or ask what to do…"
               disabled={streaming}
               className="flex-1 bg-[#F2F3F5] rounded-full px-4 py-2.5 text-[15px] text-[#0A2540] placeholder:text-[#8E8E93] focus:outline-none focus:ring-2 disabled:opacity-50"
               style={{ ["--tw-ring-color" as string]: ACCENT + "40" }}
@@ -2046,7 +2059,7 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
         Manage your plans, not just ask about them
       </h2>
       <p className="text-[14px] text-gray-500 text-center mb-4 max-w-[320px] leading-snug">
-        Ask in plain language. Affirm&apos;s policy engine decides eligibility — Face ID authorizes the action. Try the same intent on two plans:
+        Tell me what&apos;s going on. I&apos;ll reason across all your plans, surface what&apos;s eligible, and authorize with Face ID:
       </p>
       <div className="w-full space-y-2">
         {SUGGESTIONS.map((s, i) => (
@@ -2139,6 +2152,51 @@ type ServicingRefundCaseResult =
       autopay_paused_until_label: string;
       contact_url: string;
       contact_label: string;
+    }
+  | { error: string; message: string };
+
+type TriagePlanRow = {
+  loan_id: string;
+  merchant: string;
+  merchant_domain: string;
+  next_due_iso: string;
+  next_due_label: string;
+  days_until_due: number;
+  monthly_payment_usd: number;
+  reschedule_eligible: boolean;
+  reschedule_block_code?: string;
+  reschedule_block_reason?: string;
+  latest_eligible_iso?: string;
+  latest_eligible_label?: string;
+};
+
+type TriageRecommendation =
+  | {
+      kind: "reschedule";
+      loan_id: string;
+      merchant: string;
+      monthly_payment_usd: number;
+      current_due_label: string;
+      latest_eligible_label: string;
+      rationale: string;
+    }
+  | {
+      kind: "pay_early";
+      loan_id: string;
+      merchant: string;
+      monthly_payment_usd: number;
+      current_due_label: string;
+      rationale: string;
+    };
+
+type ServicingTriageResult =
+  | {
+      ok: true;
+      total_due_window_usd: number;
+      window_label: string;
+      plans: TriagePlanRow[];
+      recommended: TriageRecommendation | null;
+      policy_note: string;
     }
   | { error: string; message: string };
 
@@ -2626,6 +2684,182 @@ function ServicingErrorCard({ title, message, code }: { title: string; message: 
   );
 }
 
+/**
+ * Cross-plan triage card. Surfaced when the user describes a cash-flow
+ * constraint ("I'm going to be short this month") and the agent routes
+ * the intent through `servicing_triage_options`.
+ *
+ * NOTE — why this response type has no equivalent in the Manage tab:
+ * The Manage tab can list every loan, but it can't reason ACROSS loans.
+ * Picking the right action for a cash shortfall requires:
+ *   1. Sorting plans by next due date (which payment hits first?)
+ *   2. Per-plan eligibility (which ones can still be rescheduled this
+ *      cycle vs which have already burned their slot?)
+ *   3. A recommendation joining (1) and (2): "Move the soonest plan
+ *      that's still reschedule-eligible — that frees the most cash with
+ *      the least policy cost."
+ * That's a reasoning step the structured Manage UI cannot perform; it
+ * just displays state. The triage card is the agent's contribution —
+ * the same data, reorganized around a decision the user is trying to
+ * make right now. If you ever ask "why isn't this just in Manage?",
+ * the answer is here.
+ */
+function ServicingTriageCard({
+  data,
+  onPick,
+}: {
+  data: Extract<ServicingTriageResult, { ok: true }>;
+  onPick: (text: string) => void;
+}) {
+  const rec = data.recommended;
+  return (
+    <div className="rounded-2xl bg-white border border-gray-200 overflow-hidden shadow-sm">
+      <div
+        className="px-4 py-3 text-white"
+        style={{
+          background: `linear-gradient(135deg, ${ACCENT} 0%, #4A3BB8 100%)`,
+        }}
+      >
+        <div className="text-[10px] uppercase tracking-wide opacity-80 font-semibold">
+          {data.window_label} · cash-flow snapshot
+        </div>
+        <div className="flex items-baseline gap-2 mt-0.5">
+          <span className="text-[22px] font-bold leading-tight">
+            {formatMoney(data.total_due_window_usd)}
+          </span>
+          <span className="text-[12px] opacity-90">due across {data.plans.length} plans</span>
+        </div>
+      </div>
+
+      <ul className="divide-y divide-gray-100">
+        {data.plans.map((p) => {
+          const dayLabel =
+            p.days_until_due < 0
+              ? `Overdue ${Math.abs(p.days_until_due)}d`
+              : p.days_until_due === 0
+              ? "Due today"
+              : `Due in ${p.days_until_due}d`;
+          return (
+            <li
+              key={p.loan_id}
+              className="px-4 py-3 flex items-center gap-3"
+            >
+              <MerchantLogo
+                domain={p.merchant_domain}
+                name={p.merchant}
+                size={36}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[14px] font-semibold text-[#0A2540] truncate">
+                    {p.merchant}
+                  </span>
+                  {p.reschedule_eligible ? (
+                    <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                      Eligible
+                    </span>
+                  ) : (
+                    <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                      Cycle used
+                    </span>
+                  )}
+                </div>
+                <div className="text-[12px] text-gray-500 mt-0.5">
+                  {p.next_due_label} · {dayLabel}
+                </div>
+                {!p.reschedule_eligible && p.reschedule_block_reason && (
+                  <div className="text-[11px] text-amber-700 mt-0.5 leading-snug">
+                    {p.reschedule_block_reason}
+                  </div>
+                )}
+                {p.reschedule_eligible && p.latest_eligible_label && (
+                  <div className="text-[11px] text-gray-400 mt-0.5">
+                    Can move up to {p.latest_eligible_label}
+                  </div>
+                )}
+              </div>
+              <div className="text-[14px] font-bold text-[#0A2540] shrink-0">
+                {formatMoney(p.monthly_payment_usd)}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+
+      {rec && (
+        <div className="px-4 py-3 border-t border-gray-100 bg-[#F7F6FE]">
+          <div className="flex items-center gap-2 mb-1">
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke={ACCENT}
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 2l2.39 7.36H22l-6.2 4.5 2.4 7.36L12 16.72 5.8 21.22l2.4-7.36L2 9.36h7.61z" />
+            </svg>
+            <span
+              className="text-[10px] uppercase tracking-wide font-bold"
+              style={{ color: ACCENT }}
+            >
+              Recommended
+            </span>
+          </div>
+          <div className="text-[13px] text-[#0A2540] leading-snug">
+            {rec.kind === "reschedule" ? (
+              <>
+                Move <span className="font-semibold">{rec.merchant}</span>{" "}
+                ({formatMoney(rec.monthly_payment_usd)}, due {rec.current_due_label}). You can push it up to{" "}
+                <span className="font-semibold">{rec.latest_eligible_label}</span>.
+              </>
+            ) : (
+              <>
+                Pay <span className="font-semibold">{rec.merchant}</span>{" "}
+                ({formatMoney(rec.monthly_payment_usd)}) early to clear the soonest payment.
+              </>
+            )}
+          </div>
+          <div className="text-[11px] text-gray-500 mt-1 leading-snug">
+            {rec.rationale}
+          </div>
+          <div className="flex gap-2 mt-2.5">
+            <button
+              type="button"
+              onClick={() =>
+                onPick(
+                  rec.kind === "reschedule"
+                    ? `Reschedule my ${rec.merchant} payment.`
+                    : `Pay an extra ${rec.merchant} installment now.`
+                )
+              }
+              className="text-[12px] font-semibold text-white px-3.5 py-1.5 rounded-full hover:opacity-90 transition"
+              style={{ background: ACCENT }}
+            >
+              {rec.kind === "reschedule"
+                ? `Reschedule ${rec.merchant}`
+                : `Pay ${rec.merchant} early`}
+            </button>
+            <button
+              type="button"
+              onClick={() => onPick(`Show me other options.`)}
+              className="text-[12px] font-semibold text-[#0A2540] px-3.5 py-1.5 rounded-full border border-gray-200 hover:border-[#0A2540]/40 transition"
+            >
+              Other options
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 py-2 text-[10px] text-gray-400 leading-snug">
+        {data.policy_note}
+      </div>
+    </div>
+  );
+}
+
 function AssistantBlockView({
   block,
   onPickPlan,
@@ -2769,6 +3003,23 @@ function AssistantBlockView({
           <div className="space-y-2">
             <ToolBadge block={block} />
             <ServicingRefundCaseCard data={r} />
+          </div>
+        );
+    }
+    if (block.name === "servicing_triage_options") {
+      const r = block.result as ServicingTriageResult;
+      if ("error" in r && r.error)
+        return (
+          <div className="space-y-2">
+            <ToolBadge block={block} />
+            <ServicingErrorCard title="Plan triage" message={r.message ?? String(r.error)} />
+          </div>
+        );
+      if ("ok" in r && r.ok)
+        return (
+          <div className="space-y-2">
+            <ToolBadge block={block} />
+            <ServicingTriageCard data={r} onPick={onPickProduct} />
           </div>
         );
     }

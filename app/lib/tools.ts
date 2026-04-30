@@ -4,6 +4,7 @@ import {
   servicingOpenRefundCase,
   servicingPayoffQuote,
   servicingReschedulePreview,
+  servicingTriageOptions,
 } from "./servicing";
 import { MERCHANTS, SHOPPABLE_MERCHANTS } from "./merchants";
 import {
@@ -136,6 +137,21 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "servicing_triage_options",
+    description:
+      "Cross-plan triage when the user describes a cash-flow constraint ('I'm short this month', 'tight on cash', 'going to be short', 'can't make all my payments', 'need more time'). Returns ALL active plans sorted by next due date with per-plan reschedule eligibility (which ones haven't used their cycle reschedule yet) and a deterministic recommendation. The card lets the user see every upcoming payment at once and shows which one to move first. Always call this for cash-constraint intents BEFORE recommending a specific action — never guess across plans yourself.",
+    input_schema: {
+      type: "object",
+      properties: {
+        constraint: {
+          type: "string",
+          description:
+            "Optional short label of what the user said (e.g. 'short this month'). Doesn't affect the math, just tells the policy engine why triage was requested.",
+        },
+      },
+    },
+  },
+  {
     name: "servicing_refund_case",
     description:
       "Open a refund case for an existing loan. Affirm doesn't issue refunds — the merchant does — but Affirm pauses autopay during the refund window and adjusts the loan principal once the refund posts. Returns a structured case card with merchant contact deep-link and what happens to the loan. Call this when the user says 'I need a refund', 'refund my X', 'I want to return X', etc.",
@@ -168,6 +184,7 @@ type ServicingReschedulePreviewInput = {
   requested_date_iso?: string;
 };
 type ServicingRefundCaseInput = { loan_id?: string; merchant_hint?: string };
+type ServicingTriageInput = { constraint?: string };
 
 function toClientProduct(p: UnifiedProduct) {
   return {
@@ -537,6 +554,8 @@ export async function dispatchTool(
       return servicingReschedulePreview(input as ServicingReschedulePreviewInput);
     case "servicing_refund_case":
       return servicingOpenRefundCase(input as ServicingRefundCaseInput);
+    case "servicing_triage_options":
+      return servicingTriageOptions(input as ServicingTriageInput);
     // Note: servicing execute paths are intentionally NOT exposed to the LLM.
     // They live behind /api/servicing/execute and require a verified WebAuthn
     // assertion. The agent surfaces quote/preview cards; the user authorizes

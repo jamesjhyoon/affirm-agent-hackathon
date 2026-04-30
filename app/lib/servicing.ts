@@ -235,6 +235,15 @@ export function servicingReschedulePreview(input: {
       message: `${loan.merchant} plan allows reschedule up to ${maxSlipDays} days past the original due date. You asked for ${dayDiff} days. Latest eligible is ${latest.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}.`,
       latest_eligible_iso: latest.toISOString().slice(0, 10),
     };
+  } else if (requested && requested < due) {
+    // Earlier-than-due reschedule isn't an error — the user just picked a date
+    // before their current due. Surface as a soft block so the card shows the
+    // eligible alternatives instead of incorrectly badging the request approved.
+    blocked = {
+      code: "RSH-PAST",
+      message: `${labelForDate(requested)} is before your current ${loan.merchant} due date of ${due.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}. Pick one of the eligible dates below — or use Pay early to clear this installment now.`,
+      latest_eligible_iso: latest.toISOString().slice(0, 10),
+    };
   }
 
   const requestOutcome: "approved" | "blocked" | null = requested
@@ -454,5 +463,177 @@ export function servicingOpenRefundCase(input: {
     }),
     contact_url: `https://www.${loan.merchantDomain}/help`,
     contact_label: `Contact ${loan.merchant}`,
+  };
+}
+
+export type TriagePlanRow = {
+  loan_id: string;
+  merchant: string;
+  merchant_domain: string;
+  next_due_iso: string;
+  next_due_label: string;
+  days_until_due: number;
+  monthly_payment_usd: number;
+  reschedule_eligible: boolean;
+  /** Set when reschedule_eligible === false. Examples: RSH-CYCLE_LIMIT. */
+  reschedule_block_code?: string;
+  reschedule_block_reason?: string;
+  /** Latest eligible date (inclusive) if reschedule is allowed. */
+  latest_eligible_iso?: string;
+  latest_eligible_label?: string;
+};
+
+export type ServicingTriageResult =
+  | {
+      ok: true;
+      total_due_window_usd: number;
+      window_label: string;
+      plans: TriagePlanRow[];
+      recommended:
+        | {
+            kind: "reschedule";
+            loan_id: string;
+            merchant: string;
+            monthly_payment_usd: number;
+            current_due_label: string;
+            latest_eligible_label: string;
+            rationale: string;
+          }
+        | {
+            kind: "pay_early";
+            loan_id: string;
+            merchant: string;
+            monthly_payment_usd: number;
+            current_due_label: string;
+            rationale: string;
+          }
+        | null;
+      policy_note: string;
+    }
+  | { error: string; message: string };
+
+/**
+ * Cross-plan cash-flow triage. Returns every active plan sorted by next due
+ * date with a per-plan reschedule eligibility check, plus a recommended
+ * action picked deterministically:
+ *
+ *   1. If any plan is reschedule-eligible, recommend rescheduling the one
+ *      with the SOONEST due date (that's the one that frees the most cash
+ *      the fastest).
+ *   2. If no plan is reschedule-eligible (e.g. every loan already used its
+ *      reschedule this cycle), fall back to "pay early on the soonest one"
+ *      so the user still has an actionable next step.
+ *   3. If the user has no active plans, return a clean error.
+ *
+ * Why this exists: the Manage tab can show every loan, but it can't reason
+ * across them — it doesn't know "Nike's already used this cycle, Peloton
+ * isn't, Peloton's due first" and decide for the user. That's the agent's
+ * job, and it's the entire reason the cross-plan card needs to exist.
+ *
+ * The recommendation is deterministic so the LLM can't override it. The
+ * agent's job is to phrase it; the engine decides which plan.
+ */
+export function servicingTriageOptions(_input: {
+  /** Free-text constraint label for telemetry; doesn't change the math. */
+  constraint?: string;
+}): ServicingTriageResult {
+  const plans = DEMO_USER.activePlans;
+  if (plans.length === 0) {
+    return { error: "NO_PLANS", message: "No active plans on this account." };
+  }
+
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+
+  const labelForDate = (d: Date) =>
+    d.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+
+  const rows: TriagePlanRow[] = plans
+    .map((p) => {
+      const due = parseIso(p.nextPaymentDueISO);
+      if (!due) return null;
+      const daysUntil = Math.round(
+        (due.getTime() - today.getTime()) / 86_400_000
+      );
+      const used = p.reschedulesUsedThisCycle ?? 0;
+      const cycleLimitHit = used >= RESCHEDULE_POLICY.maxPerCycle;
+      const maxSlipDays = p.rescheduleMaxDaysFromDue ?? RESCHEDULE_POLICY.windowDays;
+      const latest = new Date(due);
+      latest.setUTCDate(latest.getUTCDate() + maxSlipDays);
+
+      const row: TriagePlanRow = {
+        loan_id: p.id,
+        merchant: p.merchant,
+        merchant_domain: p.merchantDomain,
+        next_due_iso: p.nextPaymentDueISO,
+        next_due_label: labelForDate(due),
+        days_until_due: daysUntil,
+        monthly_payment_usd: p.monthlyPayment,
+        reschedule_eligible: !cycleLimitHit,
+      };
+      if (cycleLimitHit) {
+        row.reschedule_block_code = "RSH-CYCLE_LIMIT";
+        row.reschedule_block_reason = `Already rescheduled ${used} time${used === 1 ? "" : "s"} this billing cycle.`;
+      } else {
+        row.latest_eligible_iso = latest.toISOString().slice(0, 10);
+        row.latest_eligible_label = labelForDate(latest);
+      }
+      return row;
+    })
+    .filter((r): r is TriagePlanRow => r !== null)
+    .sort((a, b) => a.next_due_iso.localeCompare(b.next_due_iso));
+
+  const totalDueUsd = rows.reduce((s, r) => s + r.monthly_payment_usd, 0);
+  const horizonDays = rows.length > 0 ? rows[rows.length - 1].days_until_due : 0;
+  const windowLabel =
+    horizonDays <= 7
+      ? "Next 7 days"
+      : horizonDays <= 14
+      ? "Next 2 weeks"
+      : horizonDays <= 30
+      ? "Next 30 days"
+      : "Upcoming";
+
+  const eligibleRows = rows.filter((r) => r.reschedule_eligible);
+  type Recommendation = Exclude<
+    Extract<ServicingTriageResult, { ok: true }>["recommended"],
+    null
+  >;
+  let recommended: Recommendation;
+  if (eligibleRows.length > 0) {
+    const best = eligibleRows[0]; // already sorted by soonest due
+    recommended = {
+      kind: "reschedule",
+      loan_id: best.loan_id,
+      merchant: best.merchant,
+      monthly_payment_usd: best.monthly_payment_usd,
+      current_due_label: best.next_due_label,
+      latest_eligible_label: best.latest_eligible_label!,
+      rationale: `${best.merchant} is your soonest reschedule-eligible payment. Moving it buys you the most time without burning a cycle on a plan that still has options.`,
+    };
+  } else {
+    const fallback = rows[0];
+    recommended = {
+      kind: "pay_early",
+      loan_id: fallback.loan_id,
+      merchant: fallback.merchant,
+      monthly_payment_usd: fallback.monthly_payment_usd,
+      current_due_label: fallback.next_due_label,
+      rationale: `Every plan has already used its reschedule this cycle, so a reschedule isn't on the table. Paying ${fallback.merchant} early is the cleanest way to take that one off the board.`,
+    };
+  }
+
+  return {
+    ok: true as const,
+    total_due_window_usd: Math.round(totalDueUsd * 100) / 100,
+    window_label: windowLabel,
+    plans: rows,
+    recommended,
+    policy_note: `Reschedule allowed up to ${RESCHEDULE_POLICY.windowDays} days past due, ${RESCHEDULE_POLICY.maxPerCycle} per billing cycle.`,
   };
 }
