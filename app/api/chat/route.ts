@@ -2,7 +2,73 @@ import Anthropic from "@anthropic-ai/sdk";
 import { TOOL_DEFINITIONS, dispatchTool, type ToolContext } from "@/app/lib/tools";
 import { auth } from "@/auth";
 
-const client = new Anthropic();
+/**
+ * LLM client construction. The Anthropic SDK supports a custom baseURL +
+ * defaultHeaders, which is exactly the integration shape Affirm's internal
+ * LLM proxy ("Quicksilver") exposes — same Anthropic request/response
+ * schema, different host and auth.
+ *
+ * Env-var contract (configured at deploy time, never at request time):
+ *
+ *   LLM_BASE_URL              optional. Quicksilver base URL in prod;
+ *                             omitted in local dev so the SDK hits
+ *                             api.anthropic.com directly.
+ *   LLM_API_KEY               required. Quicksilver-issued credential in
+ *                             prod, raw Anthropic key in dev. Falls back
+ *                             to ANTHROPIC_API_KEY for backward compat
+ *                             with existing .env.local files.
+ *   LLM_DEFAULT_HEADERS_JSON  optional JSON object. Lets us inject the
+ *                             cost-attribution / team-id / bearer-auth
+ *                             headers Quicksilver requires WITHOUT
+ *                             writing Quicksilver-specific code in this
+ *                             repo. If Quicksilver uses Authorization:
+ *                             Bearer instead of x-api-key, that goes
+ *                             here as { "Authorization": "Bearer ..." }.
+ *
+ * Why this shape: the LLM call is the only place in the codebase that
+ * needs to know which proxy is in play. Keeping it env-driven means
+ * flipping between "James's personal Anthropic key" and "Affirm's
+ * sanctioned LLM pipe" is a Vercel env-var change, not a code change.
+ * Production would never ship without LLM_BASE_URL pointed at
+ * Quicksilver — that's the only path that satisfies Affirm's PII
+ * compliance + cost-attribution requirements for LLM traffic.
+ */
+function buildLlmClient(): { client: Anthropic; apiKey: string } {
+  const baseURL = process.env.LLM_BASE_URL?.trim();
+  const apiKey =
+    process.env.LLM_API_KEY?.trim() ||
+    process.env.ANTHROPIC_API_KEY?.trim() ||
+    "";
+
+  let defaultHeaders: Record<string, string> | undefined;
+  const headersRaw = process.env.LLM_DEFAULT_HEADERS_JSON?.trim();
+  if (headersRaw) {
+    try {
+      const parsed = JSON.parse(headersRaw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        defaultHeaders = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>)
+            .filter(([, v]) => typeof v === "string")
+            .map(([k, v]) => [k, v as string])
+        );
+      }
+    } catch (e) {
+      console.warn(
+        "[chat] LLM_DEFAULT_HEADERS_JSON could not be parsed — ignoring.",
+        e
+      );
+    }
+  }
+
+  const client = new Anthropic({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+    ...(defaultHeaders ? { defaultHeaders } : {}),
+  });
+  return { client, apiKey };
+}
+
+const { client, apiKey: LLM_API_KEY } = buildLlmClient();
 
 function buildSystemPrompt(userFirstName: string) {
   return SYSTEM_PROMPT_TEMPLATE.replace(/{{USER_FIRST_NAME}}/g, userFirstName);
@@ -105,9 +171,12 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!LLM_API_KEY) {
     return Response.json(
-      { error: "Server is missing ANTHROPIC_API_KEY." },
+      {
+        error:
+          "Server is missing LLM credentials. Set LLM_API_KEY (Quicksilver) or ANTHROPIC_API_KEY (local dev).",
+      },
       { status: 500 }
     );
   }
@@ -221,7 +290,7 @@ export async function POST(request: Request) {
 
 function friendlyError(err: unknown): string {
   if (err instanceof Anthropic.APIError) {
-    if (err.status === 401) return "Authentication failed — check ANTHROPIC_API_KEY.";
+    if (err.status === 401) return "LLM authentication failed — check LLM_API_KEY (Quicksilver) or ANTHROPIC_API_KEY.";
     if (err.status === 429) return "Rate limited. Give it a few seconds and try again.";
     if (err.status === 529 || err.status === 503)
       return "Claude is overloaded right now. Try again in a moment.";
