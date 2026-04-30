@@ -3,35 +3,32 @@ import { TOOL_DEFINITIONS, dispatchTool, type ToolContext } from "@/app/lib/tool
 import { auth } from "@/auth";
 
 /**
- * LLM client construction. The Anthropic SDK supports a custom baseURL +
- * defaultHeaders, which is exactly the integration shape Affirm's internal
- * LLM proxy ("Quicksilver") exposes — same Anthropic request/response
- * schema, different host and auth.
+ * LLM client construction.
  *
- * Env-var contract (configured at deploy time, never at request time):
+ * The chat route hits Anthropic via the official SDK. The SDK accepts a
+ * custom baseURL + defaultHeaders, so we expose those as env vars to make
+ * the LLM endpoint configurable WITHOUT a code change. That matters for
+ * any future migration to an Anthropic-compatible proxy — corporate LLM
+ * gateways, internal AI platforms, regional Anthropic deployments — that
+ * speak the same request/response schema. Today, this demo points
+ * straight at api.anthropic.com.
  *
- *   LLM_BASE_URL              optional. Quicksilver base URL in prod;
- *                             omitted in local dev so the SDK hits
- *                             api.anthropic.com directly.
- *   LLM_API_KEY               required. Quicksilver-issued credential in
- *                             prod, raw Anthropic key in dev. Falls back
- *                             to ANTHROPIC_API_KEY for backward compat
- *                             with existing .env.local files.
- *   LLM_DEFAULT_HEADERS_JSON  optional JSON object. Lets us inject the
- *                             cost-attribution / team-id / bearer-auth
- *                             headers Quicksilver requires WITHOUT
- *                             writing Quicksilver-specific code in this
- *                             repo. If Quicksilver uses Authorization:
- *                             Bearer instead of x-api-key, that goes
- *                             here as { "Authorization": "Bearer ..." }.
+ * Env-var contract (set at deploy time, never per-request):
  *
- * Why this shape: the LLM call is the only place in the codebase that
- * needs to know which proxy is in play. Keeping it env-driven means
- * flipping between "James's personal Anthropic key" and "Affirm's
- * sanctioned LLM pipe" is a Vercel env-var change, not a code change.
- * Production would never ship without LLM_BASE_URL pointed at
- * Quicksilver — that's the only path that satisfies Affirm's PII
- * compliance + cost-attribution requirements for LLM traffic.
+ *   LLM_BASE_URL              optional. Override the default Anthropic
+ *                             host. Omit for direct Anthropic.
+ *   LLM_API_KEY               preferred. Falls back to ANTHROPIC_API_KEY
+ *                             for backward compatibility with existing
+ *                             local .env files.
+ *   LLM_DEFAULT_HEADERS_JSON  optional JSON object of extra headers.
+ *                             Useful for proxies that require bearer
+ *                             auth ({ "Authorization": "Bearer ..." })
+ *                             or cost-attribution metadata
+ *                             ({ "X-Team-Id": "..." }).
+ *
+ * The LLM call is the only place in the codebase that needs to know which
+ * endpoint is in play. Keeping it env-driven means a future swap is a
+ * deploy-time config change, not a code edit.
  */
 function buildLlmClient(): { client: Anthropic; apiKey: string } {
   const baseURL = process.env.LLM_BASE_URL?.trim();
@@ -175,7 +172,7 @@ export async function POST(request: Request) {
     return Response.json(
       {
         error:
-          "Server is missing LLM credentials. Set LLM_API_KEY (Quicksilver) or ANTHROPIC_API_KEY (local dev).",
+          "Server is missing LLM credentials. Set LLM_API_KEY or ANTHROPIC_API_KEY.",
       },
       { status: 500 }
     );
@@ -290,7 +287,7 @@ export async function POST(request: Request) {
 
 function friendlyError(err: unknown): string {
   if (err instanceof Anthropic.APIError) {
-    if (err.status === 401) return "LLM authentication failed — check LLM_API_KEY (Quicksilver) or ANTHROPIC_API_KEY.";
+    if (err.status === 401) return "LLM authentication failed — check LLM_API_KEY or ANTHROPIC_API_KEY.";
     if (err.status === 429) return "Rate limited. Give it a few seconds and try again.";
     if (err.status === 529 || err.status === 503)
       return "Claude is overloaded right now. Try again in a moment.";

@@ -123,7 +123,7 @@ export default function AboutPage() {
             "2. The policy engine is deterministic. RESCHEDULE_POLICY (14-day window, 1 reschedule per cycle) lives in code, not in the prompt. Cycle-limit denial is computed from plan state, not LLM judgment.",
             "3. The executor is gated by an action-bound WebAuthn assertion. The user's Face ID prompt is keyed to the exact (action, amount, date, loan_id) hash. The LLM cannot reach the executor — only the user's Confirm tap can.",
             "4. Comms run server-side off the executor result, not the chat transcript. In production these would route through Affirm's templated comms pipeline, not Resend.",
-            "5. LLM traffic in production runs through Quicksilver — Affirm's internal LLM proxy. Same Anthropic request/response schema, different host, internal credentials, PII compliance and cost attribution handled by infra. The chat route reads LLM_BASE_URL + LLM_API_KEY at boot; flipping between local-dev (direct Anthropic) and prod (Quicksilver) is an env-var change, not a code change. No prompt or plan data leaves Affirm's perimeter to a public LLM endpoint in the production path.",
+            "5. The LLM endpoint itself is configurable via env vars (LLM_BASE_URL, LLM_API_KEY, LLM_DEFAULT_HEADERS_JSON). A v1 production migration would point the chat route at an Affirm-internal AI gateway or proxy WITHOUT a code change — keeping LLM traffic on a sanctioned pipe is a deploy-time config decision, not a rewrite.",
           ]}
         />
 
