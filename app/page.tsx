@@ -285,15 +285,17 @@ export default function Home() {
   }, [view]);
 
   useEffect(() => {
+    // We persist `view` so a refresh doesn't bounce the user back to
+    // home, but we deliberately do NOT persist `messages`. A judge who
+    // opens the demo a second time should land on a clean chat — not a
+    // graveyard of old quote/preview cards from the previous session,
+    // some of which may be in weird mid-action states. Strip any
+    // legacy persisted messages from prior builds at the same time.
     try {
       const savedView = localStorage.getItem("affirm_view");
-      const savedMessages = localStorage.getItem("affirm_messages");
       if (savedView === "home" || savedView === "chat" || savedView === "manage")
         setView(savedView);
-      if (savedMessages) {
-        const parsed = JSON.parse(savedMessages) as Message[];
-        if (Array.isArray(parsed)) setMessages(parsed);
-      }
+      localStorage.removeItem("affirm_messages");
     } catch { /* ignore */ } finally { setHydrated(true); }
   }, []);
 
@@ -301,9 +303,8 @@ export default function Home() {
     if (!hydrated) return;
     try {
       localStorage.setItem("affirm_view", view);
-      localStorage.setItem("affirm_messages", JSON.stringify(messages));
     } catch { /* storage full */ }
-  }, [hydrated, view, messages]);
+  }, [hydrated, view]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -510,7 +511,6 @@ export default function Home() {
           toast={toast}
           onSignOut={() => {
             localStorage.removeItem("affirm_view");
-            localStorage.removeItem("affirm_messages");
             signOut({ callbackUrl: "/" });
           }}
         />
@@ -530,7 +530,6 @@ export default function Home() {
           }}
           onSignOut={() => {
             localStorage.removeItem("affirm_view");
-            localStorage.removeItem("affirm_messages");
             signOut({ callbackUrl: "/" });
           }}
           recentlyUpdatedLoanId={recentlyUpdatedLoanId}
