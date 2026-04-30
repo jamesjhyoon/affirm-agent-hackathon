@@ -221,18 +221,21 @@ export function servicingReschedulePreview(input: {
     latest_eligible_iso: string;
   } | null = null;
 
-  // Cycle-limit denial takes precedence — it applies regardless of requested date.
+  // Cycle-limit denial takes precedence — it applies regardless of requested
+  // date. Message phrasing is deliberately routed-not-denied: this is a
+  // SELF-SERVE channel limit, not a credit decision. A human servicing rep
+  // can still make the change. See the regulatory framing in /about.
   if (cycleLimitHit) {
     blocked = {
       code: "RSH-CYCLE_LIMIT",
-      message: `${loan.merchant} has already been rescheduled ${used} time${used === 1 ? "" : "s"} this billing cycle. Plan policy allows ${RESCHEDULE_POLICY.maxPerCycle} reschedule per cycle.`,
+      message: `${loan.merchant} has already been rescheduled this billing cycle. Self-serve allows ${RESCHEDULE_POLICY.maxPerCycle} reschedule per cycle — additional changes need a servicing rep.`,
       latest_eligible_iso: latest.toISOString().slice(0, 10),
     };
   } else if (requested && requested > latest) {
     const dayDiff = Math.round((requested.getTime() - due.getTime()) / 86_400_000);
     blocked = {
       code: "RSH-MAX_WINDOW",
-      message: `${loan.merchant} plan allows reschedule up to ${maxSlipDays} days past the original due date. You asked for ${dayDiff} days. Latest eligible is ${latest.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}.`,
+      message: `Self-serve reschedule is limited to ${maxSlipDays} days past the original due date. You asked for ${dayDiff} days. Latest self-serve eligible is ${latest.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}. Beyond that, a servicing rep can help.`,
       latest_eligible_iso: latest.toISOString().slice(0, 10),
     };
   } else if (requested && requested < due) {

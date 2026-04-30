@@ -67,22 +67,35 @@ const TOOL_LABELS: Record<string, { running: string; done: string }> = {
 };
 
 /**
- * Demo openers — order matters. The first opener is the value-prop opener:
- * a cash-flow constraint that no Manage-tab UI can answer because it
- * requires reasoning ACROSS plans (sort by due date, check per-plan
- * reschedule eligibility, recommend a specific move). That's the moment
- * judges should see first.
+ * Demo openers — order matters. The four prompts are arranged so a judge
+ * scanning the screen for 30 seconds can see the entire thesis land:
  *
- * Then the same-intent-different-outcome pair: rescheduling Nike fails
- * (cycle limit) → the card surfaces pay-early. Rescheduling another loan
- * succeeds. That's the "approved vs denied based on real plan state"
- * proof point.
+ *   1. Cross-plan triage. "I'm going to be short this month" is
+ *      structurally impossible for the Manage tab — it requires reading
+ *      every plan's state, checking per-plan cycle usage, sorting by
+ *      leverage, and recommending a specific move. This is the value-prop
+ *      opener.
+ *
+ *   2 & 3. Same-intent symmetric pose. Identical phrasing on two plans,
+ *      opposite outcomes — Peloton (cycle 0) approves, Nike (cycle 1
+ *      already used) denies. Same intent, plan-state-driven outcome.
+ *      That's the "approved vs denied based on real plan state" proof
+ *      point judges asked for. The contrast doesn't come from request
+ *      shape ("you asked for 30 days"); it comes from where each loan
+ *      sits in its billing cycle.
+ *
+ *   4. A different action primitive (payoff) so the demo doesn't look
+ *      like one tool rephrased four ways.
+ *
+ * Refund flow still works if a judge types "refund my Nike order" — it's
+ * just dropped from the suggested openers to keep the script tight on the
+ * thesis.
  */
 const SUGGESTIONS = [
   "I'm going to be a little short this month — what are my options?",
-  "Move my Nike payment 2 weeks out",
+  "Move my Peloton payment a week out",
+  "Move my Nike payment a week out",
   "Pay off my Peloton loan in full",
-  "Refund my Nike order",
 ];
 
 // Affirm design tokens
@@ -1532,6 +1545,57 @@ function ManageScreen({
 
         {loans !== null && tab === "active" && (
           <>
+            {/* "Ask the assistant" hero — the deliberate answer to the
+                judge question "why isn't this just a smarter Manage tab?".
+                This screen IS Manage. The agent is the verb layer that
+                runs on top: structured UI shows state, agent reasons
+                across that state ("I'm short this month — what should I
+                move first?") and authorizes actions with Face ID. The
+                CTA opens chat with no prefill so the user can drive a
+                cross-plan question that no structured tab can answer.
+                Per-plan entries (Pay off / Reschedule / Pay early below)
+                already cover the targeted action case. */}
+            <div className="px-4 mt-4">
+              <button
+                type="button"
+                onClick={() => onOpenChatWith("")}
+                className="w-full rounded-2xl text-left px-4 py-3.5 text-white shadow-sm hover:opacity-95 transition"
+                style={{
+                  background:
+                    "linear-gradient(135deg, #6959F8 0%, #4A3BB8 100%)",
+                }}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[14px] font-bold leading-tight">
+                      Ask the assistant
+                    </div>
+                    <div className="text-[11px] opacity-90 mt-0.5 leading-snug">
+                      Reason across plans, reschedule, or pay off — Face ID authorizes.
+                    </div>
+                  </div>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-80">
+                    <path d="M9 18l6-6-6-6" />
+                  </svg>
+                </div>
+              </button>
+              <div className="text-center mt-1.5">
+                <a
+                  href="/about"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] text-gray-400 hover:text-[#6959F8] underline underline-offset-2 transition"
+                >
+                  About this build · architecture & scope
+                </a>
+              </div>
+            </div>
+
             {/* Plan policy panel — keep this; it's what makes the
                 approved-vs-denied contrast feel principled rather than
                 arbitrary. Compact pill above Upcoming so the section header
@@ -2389,8 +2453,16 @@ function ServicingReschedulePreviewCard({
     phase === "authenticating" || phase === "submitting" || phase === "done";
 
   // When the user's requested date was outside the policy window, the preview
-  // returns a blocked_request. This is the "denied based on real plan state"
-  // moment — make it unmistakable, then offer the one-tap pay-early pivot.
+  // returns a blocked_request. This is the "approved vs denied based on real
+  // plan state" moment — but the framing matters for compliance. We DON'T
+  // call this "Denied" or "Not eligible" because either reads like adverse
+  // action under Reg B / ECOA. It isn't — the loan terms aren't changing,
+  // the user's credit isn't being denied. The self-serve servicing channel
+  // has an operational limit (1 reschedule per cycle) the same way a
+  // deposit account has "1 free transfer per month." We frame it as a
+  // self-serve channel limit and ALWAYS offer two paths forward: the
+  // pay-early pivot (action loop preserved in chat), and a real escape
+  // hatch to human servicing. Users never hit a dead-end.
   if (data.blocked_request) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
@@ -2401,7 +2473,7 @@ function ServicingReschedulePreviewCard({
             <div className="text-[12px] text-white/80">Current due {data.current_due_label} · Next installment {formatMoney(data.next_installment_usd)}</div>
           </div>
           <span className="text-[10px] uppercase tracking-wide font-bold px-2 py-1 rounded bg-amber-400/20 text-amber-200 border border-amber-400/40 shrink-0">
-            Not eligible
+            Self-serve limit
           </span>
         </div>
         <div className="px-4 py-3 space-y-3">
@@ -2411,7 +2483,7 @@ function ServicingReschedulePreviewCard({
                 {data.blocked_request.code}
               </span>
               <span className="text-[11px] uppercase tracking-wide font-semibold text-amber-900">
-                Policy decision
+                Self-serve policy
               </span>
             </div>
             <div className="text-[13px] text-amber-950 leading-snug">
@@ -2419,7 +2491,8 @@ function ServicingReschedulePreviewCard({
             </div>
           </div>
           <div className="text-[12px] text-gray-600 leading-snug">
-            Pay {formatMoney(data.next_installment_usd)} now from {DEFAULT_INSTALLMENT_FS_LABEL} instead — same outcome, stays current.
+            Two paths from here — pay this installment now to stay current,
+            or talk to a servicing rep for an exception.
           </div>
           <BiometricConfirmButton
             label={`Pay ${formatMoney(data.next_installment_usd)} now with Face ID`}
@@ -2434,6 +2507,17 @@ function ServicingReschedulePreviewCard({
               })
             }
           />
+          {/* Real escape hatch — a /help URL the agent can route to without
+              pretending to call servicing itself. The point isn't to take
+              the user away; it's to prove the design never traps them. */}
+          <a
+            href="https://www.affirm.com/help"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block w-full text-center py-2 rounded-xl bg-white text-[#0A2540] border border-gray-300 hover:border-[#0A2540]/60 hover:bg-gray-50 text-[13px] font-semibold transition"
+          >
+            Talk to servicing
+          </a>
         </div>
       </div>
     );
