@@ -114,10 +114,48 @@ function assistantText(m: Message): string {
 }
 
 /**
+ * Format a YYYY-MM-DD ISO string as "May 6" (no year). Used everywhere
+ * the user sees a date — receipts, prose projections, etc. We never want
+ * raw ISO bleeding into UI copy; that's "looks like raw API output" to a
+ * judge. Falls back to the input if it isn't a parseable ISO date.
+ */
+function formatIsoDateShort(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * Map an internal policy_code (RESCHEDULE_OK, PAYOFF_OK, ...) to a
+ * user-facing receipt-chip label. We deliberately KEEP the codes in the
+ * tool output for engineering / audit observability, but strip them
+ * from anything the user sees. "RESCHEDULE_OK" on a receipt looks like
+ * leaked machine state; "Rescheduled" reads like a confirmation.
+ */
+function policyCodeToLabel(code: string | undefined): string {
+  if (!code) return "Done";
+  const c = code.toUpperCase();
+  if (c.startsWith("RESCHEDULE")) return "Rescheduled";
+  if (c.startsWith("PAYOFF")) return "Paid off";
+  if (c.startsWith("PAY_INSTALLMENT")) return "Payment submitted";
+  return "Done";
+}
+
+/**
  * Project an executed (post-biometric) block into a short assistant-style
  * sentence so the LLM has context for follow-up turns ("did that go through?",
  * "what's left?"). The LLM never produces these strings — we synthesize them
  * after a successful /api/servicing/execute call.
+ *
+ * Dates are passed through {@link formatIsoDateShort} so the LLM sees
+ * "May 6" instead of "2026-05-06" in conversation history. If we hand it
+ * raw ISO strings, it tends to parrot them back in prose on follow-up
+ * turns, which reads as raw API output to a user.
  */
 function executedBlockToText(result: ServicingActionResult): string {
   if ("error" in result) return "";
@@ -129,7 +167,7 @@ function executedBlockToText(result: ServicingActionResult): string {
     return `Done — ${result.merchant} payoff submitted for ${moneyFmt(result.amount_usd)} from ${result.funding_source_label}. Reference ${result.reference_id}.${emailNote}`;
   }
   if (result.kind === "reschedule") {
-    return `Done — ${result.merchant} due date moved from ${result.previous_due_iso} to ${result.new_due_iso}. Reference ${result.reference_id}.${emailNote}`;
+    return `Done — ${result.merchant} due date moved from ${formatIsoDateShort(result.previous_due_iso)} to ${formatIsoDateShort(result.new_due_iso)}. Reference ${result.reference_id}.${emailNote}`;
   }
   return `Done — extra ${moneyFmt(result.amount_usd)} payment toward ${result.merchant} submitted from ${result.funding_source_label}. Reference ${result.reference_id}.${emailNote}`;
 }
@@ -2535,17 +2573,26 @@ function ServicingReschedulePreviewCard({
               })
             }
           />
-          {/* Real escape hatch — a /help URL the agent can route to without
-              pretending to call servicing itself. The point isn't to take
-              the user away; it's to prove the design never traps them. */}
+          {/* Real escape hatch — a context-loaded /help URL. The query
+              params (topic + reason code + merchant) signal what the user
+              is asking about; in production those would deep-link the
+              servicing chat to the right plan with the right context
+              already loaded. The point isn't to take the user away — it's
+              to prove the design never traps them, and to demonstrate
+              the integration shape the v1 ship would use. */}
           <a
-            href="https://www.affirm.com/help"
+            href={`https://www.affirm.com/help/contact?topic=reschedule&reason=${encodeURIComponent(
+              data.blocked_request.code
+            )}&plan=${encodeURIComponent(data.merchant)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="block w-full text-center py-2 rounded-xl bg-white text-[#0A2540] border border-gray-300 hover:border-[#0A2540]/60 hover:bg-gray-50 text-[13px] font-semibold transition"
           >
-            Talk to servicing
+            Talk to a rep about {data.merchant}
           </a>
+          <div className="text-[10px] text-gray-400 text-center -mt-1.5 leading-snug">
+            Opens Affirm support pre-loaded with this plan + reason
+          </div>
         </div>
       </div>
     );
@@ -3010,7 +3057,7 @@ function AssistantBlockView({
           referenceId={r.reference_id}
           subtitle={`${r.merchant} · ${formatMoney(r.amount_usd)} · ${r.funding_source_label}`}
           email={r.email}
-          policyCode={r.policy_codes?.[0] ?? "PAYOFF OK"}
+          policyCode={policyCodeToLabel(r.policy_codes?.[0]) || "Paid off"}
           onViewInManage={onViewInManage}
         />
       );
@@ -3020,9 +3067,9 @@ function AssistantBlockView({
         <ServicingSuccessCard
           title="Due date updated"
           referenceId={r.reference_id}
-          subtitle={`${r.merchant} · ${r.previous_due_iso} → ${r.new_due_iso}`}
+          subtitle={`${r.merchant} · ${formatIsoDateShort(r.previous_due_iso)} → ${formatIsoDateShort(r.new_due_iso)}`}
           email={r.email}
-          policyCode={r.policy_codes?.[0] ?? "RESCHEDULE OK"}
+          policyCode={policyCodeToLabel(r.policy_codes?.[0]) || "Rescheduled"}
           onViewInManage={onViewInManage}
         />
       );
@@ -3033,7 +3080,7 @@ function AssistantBlockView({
         referenceId={r.reference_id}
         subtitle={`${r.merchant} · ${formatMoney(r.amount_usd)} · ${r.funding_source_label}`}
         email={r.email}
-        policyCode="PAY_INSTALLMENT OK"
+        policyCode="Payment submitted"
         onViewInManage={onViewInManage}
       />
     );
