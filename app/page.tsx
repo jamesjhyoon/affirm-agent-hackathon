@@ -1392,7 +1392,11 @@ function ManageScreen({
   const [upcomingFilter, setUpcomingFilter] = useState<UpcomingFilter>("week");
 
   const activeLoans = (loans ?? []).filter((l) => l.status === "active");
-  const completedLoans = (loans ?? []).filter((l) => l.status === "paid_off");
+  // Sort Completed newest-first so the most recent payoffs land at the top
+  // (matches the real Affirm Plans tab ordering).
+  const completedLoans = (loans ?? [])
+    .filter((l) => l.status === "paid_off")
+    .sort((a, b) => b.paidOffDateIso.localeCompare(a.paidOffDateIso));
 
   // Total balance across active loans — header hero. Completed loans are
   // settled so they don't contribute to "what you owe right now".
@@ -1807,8 +1811,20 @@ function LoanCard({
             )}
           </div>
           {isPaidOff ? (
-            <div className="text-[12px] text-emerald-700 font-semibold mt-0.5">
-              Paid in full
+            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+              <span className="text-[12px] text-emerald-700 font-semibold">
+                Paid in full
+              </span>
+              {loan.paidOffDateLabel && (
+                <span className="text-[12px] text-gray-500">
+                  · {loan.paidOffDateLabel}
+                </span>
+              )}
+              {loan.payoffMethod === "early" && (
+                <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                  Paid early
+                </span>
+              )}
             </div>
           ) : (
             <div
@@ -1822,10 +1838,15 @@ function LoanCard({
         </div>
         <div className="text-right shrink-0">
           <div className="text-[16px] font-bold text-[#0A2540] leading-tight">
-            {formatMoneyM(loan.currentBalanceUsd)}
+            {/* For closed plans show the original financed amount — that's
+                the number the user remembers. $0.00 "settled" tells them
+                nothing they didn't already infer from "Paid in full". */}
+            {isPaidOff
+              ? formatMoneyM(loan.originalBalanceUsd)
+              : formatMoneyM(loan.currentBalanceUsd)}
           </div>
           <div className="text-[11px] text-gray-500">
-            {isPaidOff ? "settled" : "remaining"}
+            {isPaidOff ? "financed" : "remaining"}
           </div>
         </div>
       </div>
@@ -1834,6 +1855,13 @@ function LoanCard({
         <div className="px-4 pb-3 text-[11px] text-gray-500 -mt-1">
           {formatMoneyM(loan.monthlyPaymentUsd)}/mo ·{" "}
           {loan.monthsRemaining} payments left
+        </div>
+      )}
+
+      {isPaidOff && loan.originalTermMonths > 0 && (
+        <div className="px-4 pb-3 text-[11px] text-gray-500 -mt-1">
+          {formatMoneyM(loan.monthlyPaymentUsd)}/mo over{" "}
+          {loan.originalTermMonths} months
         </div>
       )}
 

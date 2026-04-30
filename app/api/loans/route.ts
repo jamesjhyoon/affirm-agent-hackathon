@@ -19,7 +19,11 @@ export async function GET() {
   const overrides =
     (session as unknown as { loanOverrides?: LoanOverride[] }).loanOverrides ??
     [];
-  const loans = buildLoanViews(DEMO_USER.activePlans, overrides);
+  const loans = buildLoanViews(
+    DEMO_USER.activePlans,
+    DEMO_USER.completedPlans,
+    overrides
+  );
   return NextResponse.json({
     loans,
     user: { firstName: DEMO_USER.firstName },

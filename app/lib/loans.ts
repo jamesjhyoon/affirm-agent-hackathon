@@ -16,7 +16,7 @@
  * own JWT sidesteps that entirely without paying the cost of a KV/DB.
  */
 
-import type { ActivePlan } from "./mockData";
+import type { ActivePlan, CompletedPlan } from "./mockData";
 
 export type LoanOverride =
   | {
@@ -63,6 +63,18 @@ export type LoanView = {
   nextPaymentDateIso: string;
   nextPaymentLabel: string;
   status: "active" | "paid_off";
+  /** ISO date the loan was paid off; empty string when still active. */
+  paidOffDateIso: string;
+  /** Display label for paid-off date; empty when active. */
+  paidOffDateLabel: string;
+  /**
+   * "scheduled" → ran to term on the regular schedule.
+   * "early"     → user paid off ahead of schedule.
+   * undefined   → still active.
+   */
+  payoffMethod?: "scheduled" | "early";
+  /** Term length when the plan was opened (months). */
+  originalTermMonths: number;
   /** Newest first. */
   activity: LoanActivity[];
 };
@@ -84,13 +96,14 @@ function moneyShort(n: number): string {
 
 export function buildLoanViews(
   activePlans: ActivePlan[],
+  completedPlans: CompletedPlan[],
   overrides: LoanOverride[] | undefined
 ): LoanView[] {
   // Sort overrides oldest -> newest so we can fold them in temporal order. The
   // activity log on each LoanView is reversed (newest first) at the end.
   const sorted = [...(overrides ?? [])].sort((a, b) => a.at - b.at);
 
-  return activePlans.map((plan) => {
+  const activeViews: LoanView[] = activePlans.map((plan) => {
     const view: LoanView = {
       id: plan.id,
       merchant: plan.merchant,
@@ -102,6 +115,9 @@ export function buildLoanViews(
       nextPaymentDateIso: plan.nextPaymentDueISO,
       nextPaymentLabel: plan.nextPaymentDate,
       status: "active",
+      paidOffDateIso: "",
+      paidOffDateLabel: "",
+      originalTermMonths: plan.termMonthsRemaining,
       activity: [],
     };
 
@@ -113,6 +129,9 @@ export function buildLoanViews(
         view.monthsRemaining = 0;
         view.nextPaymentDateIso = "";
         view.nextPaymentLabel = "Paid in full";
+        view.payoffMethod = "early";
+        view.paidOffDateIso = new Date(o.at).toISOString().slice(0, 10);
+        view.paidOffDateLabel = isoToLabel(view.paidOffDateIso);
         view.activity.push({
           kind: "paid_off",
           refId: o.refId,
@@ -148,6 +167,9 @@ export function buildLoanViews(
           view.monthsRemaining = 0;
           view.nextPaymentDateIso = "";
           view.nextPaymentLabel = "Paid in full";
+          view.payoffMethod = "early";
+          view.paidOffDateIso = new Date(o.at).toISOString().slice(0, 10);
+          view.paidOffDateLabel = isoToLabel(view.paidOffDateIso);
         }
       }
     }
@@ -155,4 +177,27 @@ export function buildLoanViews(
     view.activity.reverse();
     return view;
   });
+
+  // Static history. Loans that closed before this account interacted with the
+  // agent. They never accept overrides — the executor would have nothing to
+  // do — so we render them straight through.
+  const completedViews: LoanView[] = completedPlans.map((p) => ({
+    id: p.id,
+    merchant: p.merchant,
+    merchantDomain: p.merchantDomain,
+    originalBalanceUsd: p.originalAmount,
+    currentBalanceUsd: 0,
+    monthlyPaymentUsd: p.monthlyPayment,
+    monthsRemaining: 0,
+    nextPaymentDateIso: "",
+    nextPaymentLabel: "Paid in full",
+    status: "paid_off",
+    paidOffDateIso: p.paidOffISO,
+    paidOffDateLabel: isoToLabel(p.paidOffISO),
+    payoffMethod: p.payoffMethod,
+    originalTermMonths: p.originalTermMonths,
+    activity: [],
+  }));
+
+  return [...activeViews, ...completedViews];
 }

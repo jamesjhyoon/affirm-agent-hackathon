@@ -33,11 +33,44 @@ export type ActivePlan = {
   };
 };
 
+/**
+ * Plans the user has already settled. They appear in the Manage tab's
+ * Completed section and exist purely to make the account history feel like
+ * a real Affirm account — judges shouldn't see a single "no completed
+ * plans yet" empty state when they tap Completed. These are READ-ONLY:
+ * no overrides apply to them, the agent can't act on them, and the
+ * servicing engine never returns them as candidates.
+ *
+ * Kept structurally distinct from ActivePlan because the affordances differ:
+ * no nextPaymentDueISO, no rescheduleMaxDaysFromDue, no purchase context
+ * needed (refunds aren't on the table for closed loans).
+ */
+export type CompletedPlan = {
+  id: string;
+  merchant: string;
+  merchantDomain: string;
+  /** Original financed amount when the plan was opened. */
+  originalAmount: number;
+  monthlyPayment: number;
+  /** Total term length, e.g. 12 for a 12-month plan. */
+  originalTermMonths: number;
+  /** ISO date the plan reached zero balance. */
+  paidOffISO: string;
+  /**
+   * "scheduled" → ran to term on the regular monthly schedule.
+   * "early"     → user paid off ahead of schedule (Affirm shows this with
+   *               a slightly different chip in the real app).
+   */
+  payoffMethod: "scheduled" | "early";
+  productTitle: string;
+};
+
 export type DemoUser = {
   id: string;
   firstName: string;
   availableCredit: number;
   activePlans: ActivePlan[];
+  completedPlans: CompletedPlan[];
 };
 
 /**
@@ -152,6 +185,63 @@ export const DEMO_USER: DemoUser = {
         purchasedISO: MARRIOTT_PURCHASED.iso,
         purchasedLabel: MARRIOTT_PURCHASED.label,
       },
+    },
+  ],
+  /**
+   * Completed-loan history. Picked to feel like a believable two-year-old
+   * Affirm account: a mix of small (Allbirds), medium (Wayfair, Best Buy),
+   * and large (Casper) purchases, with at least one early-payoff so the
+   * Completed tab shows both pill variants. Merchants are deliberately
+   * different from the active set so judges don't think "didn't they pay
+   * Nike off too?" mid-demo.
+   *
+   * Dates anchor off ANCHOR_ISO so the spacing stays consistent as the
+   * demo rolls forward across days.
+   */
+  completedPlans: [
+    {
+      id: "plan_casper_done",
+      merchant: "Casper",
+      merchantDomain: "casper.com",
+      originalAmount: 1295,
+      monthlyPayment: 108.0,
+      originalTermMonths: 12,
+      paidOffISO: isoPlusDays(ANCHOR_ISO, -52).iso,
+      payoffMethod: "early",
+      productTitle: "Casper Original Mattress (Queen)",
+    },
+    {
+      id: "plan_wayfair_done",
+      merchant: "Wayfair",
+      merchantDomain: "wayfair.com",
+      originalAmount: 624,
+      monthlyPayment: 52.0,
+      originalTermMonths: 12,
+      paidOffISO: isoPlusDays(ANCHOR_ISO, -118).iso,
+      payoffMethod: "scheduled",
+      productTitle: "Sectional sofa",
+    },
+    {
+      id: "plan_bestbuy_done",
+      merchant: "Best Buy",
+      merchantDomain: "bestbuy.com",
+      originalAmount: 899,
+      monthlyPayment: 75.0,
+      originalTermMonths: 12,
+      paidOffISO: isoPlusDays(ANCHOR_ISO, -214).iso,
+      payoffMethod: "scheduled",
+      productTitle: "65\" OLED TV",
+    },
+    {
+      id: "plan_allbirds_done",
+      merchant: "Allbirds",
+      merchantDomain: "allbirds.com",
+      originalAmount: 135,
+      monthlyPayment: 33.75,
+      originalTermMonths: 4,
+      paidOffISO: isoPlusDays(ANCHOR_ISO, -340).iso,
+      payoffMethod: "scheduled",
+      productTitle: "Wool Runners",
     },
   ],
 };
