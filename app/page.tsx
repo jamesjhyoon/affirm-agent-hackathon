@@ -99,16 +99,17 @@ const TOOL_LABELS: Record<string, { running: string; done: string }> = {
 // differentiating moves in order:
 //   1. Cross-plan triage (cash CONSTRAINT) — same intent as Manage but
 //      with a recommendation Manage cannot produce.
-//   2. Cross-plan optimization with multi-plan allocation (cash SURPLUS) —
-//      the $1,500 amount is calibrated against the demo plans so the
-//      "spread across plans, close 2 in one move" strategy is the rank-1
-//      option. Below ~$1,254 the allocation strategy isn't surfaced (it
-//      collapses to clear_plan), so the prompt stays at $1,500.
+//   2. Cross-plan optimization (cash SURPLUS) — at $500 the engine
+//      surfaces three strategies (save_interest, clear_plan,
+//      free_cash_flow) but NOT allocate_across, which requires
+//      $1,254+ ($842 Peloton + $412 Nike). Trade-off: more relatable
+//      amount vs maximal capability showcase. If a future demo wants
+//      to lead on allocate_across specifically, bump this to $1,500.
 //   3-5. Single-plan reschedule and payoff intents to demo the policy
 //      contrast and biometric authorization on the existing card path.
 const SUGGESTIONS = [
   "I'm going to be a little short this month — what are my options?",
-  "I just got a $1,500 tax refund — where should I put it?",
+  "I have an extra $500 this month, where should I put it?",
   "Move my Peloton payment a week out",
   "Move my Nike payment a week out",
   "Pay off my Peloton loan in full",
