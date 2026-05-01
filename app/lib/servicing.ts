@@ -960,19 +960,17 @@ export function servicingOptimizationOptions(input: {
     const closesCount = allocationLegs.filter((l) => l.closes_plan).length;
     const closedNames = closingLegs.map((l) => l.merchant).join(" and ");
     const tailFragment = tailLeg
-      ? ` and putting ${moneyShort(tailLeg.apply_amount_usd)} against ${tailLeg.merchant} at ${aprPctLabel(tailLeg.apr_bps)}`
+      ? `, then puts ${moneyShort(tailLeg.apply_amount_usd)} against ${tailLeg.merchant} at ${aprPctLabel(tailLeg.apr_bps)}`
       : "";
-    const interestFragment =
-      allocInterestSaved >= 1
-        ? ` Saves roughly ${moneyShort(allocInterestSaved)} in interest along the way.`
-        : "";
     const totalApplied = allocationLegs.reduce(
       (s, l) => s + l.apply_amount_usd,
       0
     );
     const leftover = Math.round((amount - totalApplied) * 100) / 100;
     const headline = `Close ${closesCount} plan${closesCount === 1 ? "" : "s"} in one move`;
-    const rationale = `Spread ${moneyShort(amount)} to fully close ${closedNames}${tailFragment}.${interestFragment}`;
+    // Rationale stays short on purpose — the leg breakdown below shows
+    // the math; the prose is just the one-line strategy framing.
+    const rationale = `Closes ${closedNames} outright${tailFragment}.`;
     const anchor = closingLegs[0];
     allocOption = {
       rank: 0,

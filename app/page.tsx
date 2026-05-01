@@ -3260,6 +3260,16 @@ function OptimizationOptionRow({
     option.allocation_legs &&
     option.allocation_legs.length > 0;
 
+  // Visual hierarchy: the recommended option (rank 1) shows full detail —
+  // strategy chip + RECOMMENDED + closes badges + headline + rationale +
+  // allocation legs OR full metric row + CTA. Non-recommended options are
+  // deliberately compact: strategy chip + headline + one metric line + CTA.
+  // The headline is self-explanatory enough on its own ("Save ~$152 in
+  // interest on Marriott" / "Close Nike today" / "Cover the next 6 Nike
+  // payments") that repeating the rationale just adds noise the user has
+  // to filter through. Cuts the card to roughly half its previous height.
+  const showFullDetail = isTop;
+
   return (
     <li className="px-4 py-3">
       <div className="flex items-start gap-3">
@@ -3288,7 +3298,7 @@ function OptimizationOptionRow({
           <MerchantLogo
             domain={option.merchant_domain}
             name={option.merchant}
-            size={36}
+            size={showFullDetail ? 36 : 32}
           />
         )}
         <div className="flex-1 min-w-0">
@@ -3303,23 +3313,29 @@ function OptimizationOptionRow({
                 Recommended
               </span>
             )}
-            {!isAllocation && option.closes_plan && (
+            {showFullDetail && !isAllocation && option.closes_plan && (
               <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
                 Closes plan
               </span>
             )}
-            {isAllocation && typeof option.plans_closed_count === "number" && (
+            {showFullDetail && isAllocation && typeof option.plans_closed_count === "number" && (
               <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
                 Closes {option.plans_closed_count} plans
               </span>
             )}
           </div>
-          <div className="text-[14px] font-semibold text-[#0A2540] mt-1 leading-snug">
+          <div
+            className={`font-semibold text-[#0A2540] mt-1 leading-snug ${
+              showFullDetail ? "text-[14px]" : "text-[13px]"
+            }`}
+          >
             {option.headline}
           </div>
-          <div className="text-[12px] text-gray-600 mt-1 leading-snug">
-            {option.rationale}
-          </div>
+          {showFullDetail && (
+            <div className="text-[12px] text-gray-600 mt-1 leading-snug">
+              {option.rationale}
+            </div>
+          )}
 
           {isAllocation && option.allocation_legs ? (
             <AllocationBreakdown
@@ -3330,12 +3346,60 @@ function OptimizationOptionRow({
               onPick={onPick}
               isTop={isTop}
             />
-          ) : (
+          ) : showFullDetail ? (
             <SinglePlanFooter option={option} onPick={onPick} isTop={isTop} />
+          ) : (
+            <CompactSinglePlanFooter option={option} onPick={onPick} />
           )}
         </div>
       </div>
     </li>
+  );
+}
+
+/**
+ * Compact metric + CTA row for non-recommended single-plan options. Picks
+ * ONE strategy-relevant metric instead of the full chain (apply / APR /
+ * interest saved / months / leftover) so the row reads in one glance.
+ */
+function CompactSinglePlanFooter({
+  option,
+  onPick,
+}: {
+  option: OptimizationOption;
+  onPick: (text: string) => void;
+}) {
+  // Pick the headline metric most relevant to each strategy. The full
+  // detail is still on the recommended row; this is just enough for the
+  // user to decide whether to click in.
+  let metric: string;
+  if (option.strategy === "save_interest" && option.est_interest_saved_usd > 0) {
+    metric = `Save ~${formatMoney(option.est_interest_saved_usd)} interest`;
+  } else if (option.strategy === "free_cash_flow" && option.est_months_saved > 0) {
+    metric = `~${option.est_months_saved} mo${option.est_months_saved === 1 ? "" : "s"} sooner`;
+  } else if (option.closes_plan) {
+    metric = `Closes for ${formatMoney(option.apply_amount_usd)}`;
+  } else {
+    metric = `Apply ${formatMoney(option.apply_amount_usd)}`;
+  }
+
+  return (
+    <div className="mt-1.5 flex items-center justify-between gap-2">
+      <span className="text-[11px] text-gray-500">{metric}</span>
+      <button
+        type="button"
+        onClick={() =>
+          onPick(
+            option.closes_plan
+              ? `Pay off my ${option.merchant} loan in full`
+              : `Pay an extra ${formatMoney(option.apply_amount_usd)} toward my ${option.merchant} plan`
+          )
+        }
+        className="text-[12px] font-semibold text-[#0A2540] px-3 py-1 rounded-full border border-gray-200 hover:border-[#0A2540]/40 hover:bg-gray-50 transition shrink-0"
+      >
+        {option.closes_plan ? `Pay off ${option.merchant}` : `Apply to ${option.merchant}`}
+      </button>
+    </div>
   );
 }
 
