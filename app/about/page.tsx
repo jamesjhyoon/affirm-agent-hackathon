@@ -85,6 +85,15 @@ export default function AboutPage() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-12">
+        {/*
+         * Opener pullquote — direct quotes from the LIVE Affirm app's
+         * Assistant when asked "what can you do?" in May 2026. We use
+         * the production assistant's own words to establish the gap
+         * before pitching anything. Every section below answers
+         * something on this list.
+         */}
+        <ProductionAssistantQuote />
+
         <Section
           eyebrow="The bet"
           title="Bounded agency, deterministic policy, biometric authorization."
@@ -93,6 +102,8 @@ export default function AboutPage() {
             "The whole architecture only makes sense for narrow, policy-bounded actions. That's why this build is scoped to existing-plan servicing and not the open-ended Assistant.",
           ]}
         />
+
+        <CapabilityGapSection />
 
         <Section
           eyebrow="Scope"
@@ -547,6 +558,198 @@ function EvalSuiteSummary({ results }: { results: EvalsResults }) {
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pulled verbatim from the Affirm production app's Assistant when asked
+ * "what can you do?" on May 1, 2026. Quoting it directly is stronger
+ * than narrating the gap ourselves — these are the production
+ * assistant's own admission of what it can't do today.
+ */
+const PRODUCTION_ASSISTANT_CANNOT = [
+  "Make multiple payments in one session",
+  "Schedule future payments",
+  "Set up AutoPay (but I can guide you how to do it yourself)",
+  "Add or remove payment methods (but I can show you how)",
+];
+
+const PRODUCTION_ASSISTANT_CAN = [
+  "Look up your account information and active payment plans",
+  "Help you make a single payment on an active payment plan",
+  "Provide information about your payment plans, balances, and due dates",
+  "Guide you through making payments on the Affirm website or app",
+  "Answer questions about Affirm products and services",
+];
+
+function ProductionAssistantQuote() {
+  return (
+    <section className="rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-5 py-5">
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={NAVY} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 21l1.65-3.8a9 9 0 1 1 3.4 2.9L3 21" />
+          </svg>
+        </div>
+        <div className="flex-1">
+          <div className="text-[10px] uppercase tracking-widest font-bold text-gray-500">
+            What the production Affirm Assistant tells users today
+          </div>
+          <div className="text-[12px] text-gray-500 mt-0.5">
+            Verbatim, May 1, 2026, in the live Affirm app
+          </div>
+
+          <div className="mt-3 grid sm:grid-cols-2 gap-3">
+            <div className="rounded-xl bg-white border border-gray-200 px-3.5 py-3">
+              <div className="text-[10px] uppercase tracking-wide font-bold text-gray-500">
+                What I can do
+              </div>
+              <ul className="mt-1.5 space-y-1 text-[12.5px] text-[#3a4a64] leading-snug">
+                {PRODUCTION_ASSISTANT_CAN.map((item, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span className="opacity-50 mt-[2px]">·</span>
+                    <span>&ldquo;{item}&rdquo;</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-xl bg-white border border-gray-200 px-3.5 py-3">
+              <div className="text-[10px] uppercase tracking-wide font-bold text-gray-500">
+                What I cannot do in this chat
+              </div>
+              <ul className="mt-1.5 space-y-1 text-[12.5px] text-[#3a4a64] leading-snug">
+                {PRODUCTION_ASSISTANT_CANNOT.map((item, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span className="opacity-50 mt-[2px]">·</span>
+                    <span>&ldquo;{item}&rdquo;</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          <p className="mt-3.5 text-[13px] text-[#0A2540] leading-relaxed">
+            Notice the pattern: every CAN item that involves an action
+            ends in &ldquo;guide you,&rdquo; &ldquo;show you how,&rdquo; or
+            &ldquo;help you make.&rdquo; The production Assistant is a router
+            to UI surfaces. This prototype is a router to actions —
+            same intents, executed inline.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Maps each "cannot" the production assistant admits to the
+ * corresponding capability in this build. Quotes are exact text from
+ * the screenshot — we don't paraphrase Affirm's own product copy.
+ */
+type CapabilityRow = {
+  quote: string;
+  status: "missing" | "handoff";
+  thisBuild: string;
+  scopeNote?: string;
+};
+
+const CAPABILITY_ROWS: CapabilityRow[] = [
+  {
+    quote: "Make multiple payments in one session",
+    status: "missing",
+    thisBuild:
+      "Multi-plan allocation in optimization. Given a dollar amount, ranks strategies — close the most plans, save the most interest, free the most near-term cash — and shows the leg-by-leg apply across plans.",
+  },
+  {
+    quote: "Schedule future payments",
+    status: "missing",
+    thisBuild:
+      "Reschedule with deterministic eligibility check. 14-day window past original due, one reschedule per upcoming payment. Approved and denied paths both render the same card; denied paths surface eligible alternatives inline.",
+  },
+  {
+    quote: "Help you make a single payment on an active payment plan",
+    status: "handoff",
+    thisBuild:
+      "Pay-installment-now executed inline. The user authorizes once with Face ID and the action runs against the executor — no second surface, no second auth, no narration of where to tap.",
+  },
+  {
+    quote: "Guide you through making payments on the Affirm website or app",
+    status: "handoff",
+    thisBuild:
+      "The system prompt explicitly forbids narrating UI navigation. The agent either executes the action or hands off to a servicing rep — never to a screen.",
+  },
+  {
+    quote: "Set up AutoPay (but I can guide you how to do it yourself)",
+    status: "handoff",
+    thisBuild: "Out of scope in v1.",
+    scopeNote:
+      "Autopay enrollment touches Reg E and merits a separate executor + comms review. The agent declines explicitly rather than narrating navigation.",
+  },
+  {
+    quote: "Add or remove payment methods (but I can show you how)",
+    status: "handoff",
+    thisBuild: "Out of scope in v1.",
+    scopeNote:
+      "Card vault changes are an Identity-owned surface; widening this agent to touch the wallet is a larger blast-radius decision deferred past v1.",
+  },
+];
+
+function CapabilityGapSection() {
+  return (
+    <Section
+      eyebrow="What changes vs. today"
+      title="Production Assistant's own words, mapped to this build."
+      body={[
+        "Every row is a direct quote from the production Assistant's self-description (above). Two columns: (1) what it admits it can't do, or what it does as a hand-off, and (2) how this prototype handles the same intent.",
+      ]}
+    >
+      <div className="mt-4 space-y-3">
+        {CAPABILITY_ROWS.map((row, i) => (
+          <CapabilityRowView key={i} row={row} />
+        ))}
+      </div>
+      <p className="mt-5 text-[13px] text-gray-600 leading-relaxed">
+        The framing for every action capability in this prototype is
+        bounded — four servicing primitives gated by a deterministic
+        policy engine and biometric authorization. Out-of-scope items
+        stay out of scope explicitly; they are not narrated, deflected
+        with a UI walkthrough, or quietly handed off.
+      </p>
+    </Section>
+  );
+}
+
+function CapabilityRowView({ row }: { row: CapabilityRow }) {
+  const tone =
+    row.status === "missing"
+      ? { chip: "bg-red-50 text-red-800 border-red-200", label: "Cannot today" }
+      : { chip: "bg-amber-50 text-amber-800 border-amber-200", label: "Hand-off today" };
+  return (
+    <div className="rounded-xl border border-gray-200 overflow-hidden">
+      <div className="bg-gray-50 px-4 py-2.5 border-b border-gray-200 flex items-start gap-2">
+        <span
+          className={`text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded border ${tone.chip} shrink-0 mt-[1px]`}
+        >
+          {tone.label}
+        </span>
+        <span className="text-[13px] text-[#0A2540] italic leading-snug">
+          &ldquo;{row.quote}&rdquo;
+        </span>
+      </div>
+      <div className="px-4 py-3 bg-white">
+        <div className="text-[10px] uppercase tracking-wide font-bold text-[#0A2540]">
+          This build
+        </div>
+        <div className="text-[13px] text-[#3a4a64] mt-1 leading-relaxed">
+          {row.thisBuild}
+        </div>
+        {row.scopeNote && (
+          <div className="mt-2 text-[12px] text-gray-500 leading-snug border-l-2 border-gray-200 pl-2.5">
+            {row.scopeNote}
+          </div>
+        )}
       </div>
     </div>
   );
