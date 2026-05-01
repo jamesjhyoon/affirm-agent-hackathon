@@ -94,9 +94,20 @@ const TOOL_LABELS: Record<string, { running: string; done: string }> = {
  * just dropped from the suggested openers to keep the script tight on the
  * thesis.
  */
+// Demo suggestions are picked to walk a judge through the agent's three
+// differentiating moves in order:
+//   1. Cross-plan triage (cash CONSTRAINT) — same intent as Manage but
+//      with a recommendation Manage cannot produce.
+//   2. Cross-plan optimization with multi-plan allocation (cash SURPLUS) —
+//      the $1,500 amount is calibrated against the demo plans so the
+//      "spread across plans, close 2 in one move" strategy is the rank-1
+//      option. Below ~$1,254 the allocation strategy isn't surfaced (it
+//      collapses to clear_plan), so the prompt stays at $1,500.
+//   3-5. Single-plan reschedule and payoff intents to demo the policy
+//      contrast and biometric authorization on the existing card path.
 const SUGGESTIONS = [
   "I'm going to be a little short this month — what are my options?",
-  "I have an extra $500 — where should I put it?",
+  "I just got a $1,500 tax refund — where should I put it?",
   "Move my Peloton payment a week out",
   "Move my Nike payment a week out",
   "Pay off my Peloton loan in full",
@@ -1131,7 +1142,7 @@ function ArchitectureSheet({ onClose }: { onClose: () => void }) {
 
         <div className="px-6 pt-2 pb-5">
           <div className="rounded-xl bg-gray-50 border border-gray-200 px-4 py-3 text-[12px] text-gray-700 leading-relaxed">
-            <span className="font-semibold text-[#0A2540]">Try it:</span> ask &quot;Move my Peloton payment 2 weeks out&quot; and then &quot;Move my Nike payment 2 weeks out.&quot; Same words, different policy outcome — Nike already used its reschedule this billing cycle.
+            <span className="font-semibold text-[#0A2540]">Try it:</span> ask &quot;Move my Peloton payment 2 weeks out&quot; and then &quot;Move my Nike payment 2 weeks out.&quot; Same words, different policy outcome — Nike&apos;s next payment has already been moved once.
           </div>
         </div>
       </div>
@@ -1668,8 +1679,8 @@ function ManageScreen({
                   </div>
                   <div className="text-[12px] leading-snug mt-0.5">
                     Reschedules: up to {RESCHEDULE_WINDOW_DAYS_DISPLAY} days
-                    past due, 1 per billing cycle. Payoffs and pay-early
-                    always available.
+                    past due. Each upcoming payment can be moved once.
+                    Payoffs and pay-early always available.
                   </div>
                 </div>
               </div>
@@ -1811,6 +1822,48 @@ function formatMoneyM(n: number) {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/**
+ * APR display helper. Affirm shows APR with two decimals when the value
+ * isn't a whole percent (e.g. 21.99%) and as an integer when it is (15%,
+ * 0%). Rendered as a small chip on plan rows so the user can compare
+ * cost-to-carry across plans without doing math.
+ */
+function formatAprBps(bps: number): string {
+  if (bps === 0) return "0% APR";
+  const pct = bps / 100;
+  return `${pct.toFixed(bps % 100 === 0 ? 0 : 2)}% APR`;
+}
+
+/**
+ * APR chip. Color-coded by interest level so the user can scan a list of
+ * plans and immediately spot the expensive ones — that's the lens the
+ * optimization tool uses internally and the chip surfaces it on every row.
+ *   - 0% APR        → green (no interest cost)
+ *   - <10% APR      → slate (low cost)
+ *   - 10–20% APR    → amber (notable cost)
+ *   - 20%+ APR      → orange (highest cost; flag for paydown)
+ */
+function AprChip({ bps, size = "sm" }: { bps: number; size?: "sm" | "xs" }) {
+  if (bps < 0) return null;
+  const tone =
+    bps === 0
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : bps < 1000
+      ? "bg-slate-50 text-slate-700 border-slate-200"
+      : bps < 2000
+      ? "bg-amber-50 text-amber-800 border-amber-200"
+      : "bg-orange-50 text-orange-800 border-orange-200";
+  const padding = size === "xs" ? "px-1.5 py-px" : "px-2 py-0.5";
+  const text = size === "xs" ? "text-[10px]" : "text-[11px]";
+  return (
+    <span
+      className={`inline-flex items-center font-semibold rounded-full border ${tone} ${padding} ${text}`}
+    >
+      {formatAprBps(bps)}
+    </span>
+  );
+}
+
 function LoanCard({
   loan,
   justUpdated,
@@ -1894,9 +1947,12 @@ function LoanCard({
       </div>
 
       {!isPaidOff && (
-        <div className="px-4 pb-3 text-[11px] text-gray-500 -mt-1">
-          {formatMoneyM(loan.monthlyPaymentUsd)}/mo ·{" "}
-          {loan.monthsRemaining} payments left
+        <div className="px-4 pb-3 -mt-1 flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] text-gray-500">
+            {formatMoneyM(loan.monthlyPaymentUsd)}/mo ·{" "}
+            {loan.monthsRemaining} payments left
+          </span>
+          <AprChip bps={loan.aprBps} size="xs" />
         </div>
       )}
 
@@ -2219,7 +2275,7 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
 }
 
 type Plan = { id: string; label: string; total_payments: number; cadence: string; apr: number; monthly_payment_usd: number; total_cost_usd: number };
-type ActivePlan = { id: string; merchant: string; merchant_domain?: string; balance_usd: number; monthly_payment_usd: number; months_remaining: number; next_payment_date?: string };
+type ActivePlan = { id: string; merchant: string; merchant_domain?: string; balance_usd: number; monthly_payment_usd: number; months_remaining: number; apr_bps?: number; next_payment_date?: string };
 type CreditSummaryResult = { user_first_name: string; available_credit_usd: number; active_plans: ActivePlan[]; total_monthly_obligation_usd: number };
 type Product = { id: string; merchant_id: string; merchant: string; title: string; price: number; description?: string; url?: string; image_url?: string; product_type?: string };
 type SearchResult = { query?: string; result_count?: number; results: Product[] };
@@ -2296,6 +2352,7 @@ type TriagePlanRow = {
   next_due_label: string;
   days_until_due: number;
   monthly_payment_usd: number;
+  apr_bps: number;
   reschedule_eligible: boolean;
   reschedule_block_code?: string;
   reschedule_block_reason?: string;
@@ -2333,7 +2390,20 @@ type ServicingTriageResult =
     }
   | { error: string; message: string };
 
-type OptimizationStrategy = "save_interest" | "clear_plan" | "free_cash_flow";
+type OptimizationStrategy =
+  | "save_interest"
+  | "clear_plan"
+  | "free_cash_flow"
+  | "allocate_across";
+
+type AllocationLeg = {
+  loan_id: string;
+  merchant: string;
+  merchant_domain: string;
+  apply_amount_usd: number;
+  closes_plan: boolean;
+  apr_bps: number;
+};
 
 type OptimizationOption = {
   rank: number;
@@ -2350,6 +2420,8 @@ type OptimizationOption = {
   est_months_saved: number;
   headline: string;
   rationale: string;
+  allocation_legs?: AllocationLeg[];
+  plans_closed_count?: number;
 };
 
 type ServicingOptimizationResult =
@@ -2556,8 +2628,8 @@ function ServicingReschedulePreviewCard({
   // call this "Denied" or "Not eligible" because either reads like adverse
   // action under Reg B / ECOA. It isn't — the loan terms aren't changing,
   // the user's credit isn't being denied. The self-serve servicing channel
-  // has an operational limit (1 reschedule per cycle) the same way a
-  // deposit account has "1 free transfer per month." We frame it as a
+  // has an operational limit (1 reschedule per upcoming payment) the same
+  // way a deposit account has "1 free transfer per month." We frame it as a
   // self-serve channel limit and ALWAYS offer two paths forward: the
   // pay-early pivot (action loop preserved in chat), and a real escape
   // hatch to human servicing. Users never hit a dead-end.
@@ -2662,7 +2734,7 @@ function ServicingReschedulePreviewCard({
               </span>
             </div>
             <div className="text-[13px] text-emerald-950 leading-snug">
-              {data.requested_date_label} is within the {RESCHEDULE_WINDOW_DAYS_DISPLAY}-day window and you have a reschedule available this billing cycle.
+              {data.requested_date_label} is within the {RESCHEDULE_WINDOW_DAYS_DISPLAY}-day window and you haven&apos;t yet moved this upcoming payment.
             </div>
           </div>
         )}
@@ -2944,13 +3016,14 @@ function ServicingTriageCard({
                   <span className="text-[14px] font-semibold text-[#0A2540] truncate">
                     {p.merchant}
                   </span>
+                  <AprChip bps={p.apr_bps} size="xs" />
                   {p.reschedule_eligible ? (
                     <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
                       Eligible
                     </span>
                   ) : (
                     <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
-                      Cycle used
+                      Already moved
                     </span>
                   )}
                 </div>
@@ -3073,6 +3146,9 @@ function ServicingOptimizationCard({
 }) {
   const options = data.options;
   const top = options[0];
+  const headlineCopy = top?.strategy === "allocate_across"
+    ? `Top option closes ${top.plans_closed_count ?? 2} plans in one move.`
+    : "Three options, three goals. Tap the one that fits.";
   return (
     <div className="rounded-2xl bg-white border border-gray-200 overflow-hidden shadow-sm">
       <div
@@ -3085,108 +3161,19 @@ function ServicingOptimizationCard({
           Best use of {formatMoney(data.hypothetical_amount_usd)}
         </div>
         <div className="text-[14px] mt-0.5 opacity-95 leading-snug">
-          Three options, three goals. Tap the one that fits.
+          {headlineCopy}
         </div>
       </div>
 
       <ul className="divide-y divide-gray-100">
-        {options.map((o) => {
-          const strategyLabel = strategyLabelFor(o.strategy);
-          const strategyTone = strategyToneFor(o.strategy);
-          const aprLabel =
-            o.apr_bps === 0
-              ? "0% APR"
-              : `${(o.apr_bps / 100).toFixed(o.apr_bps % 100 === 0 ? 0 : 2)}% APR`;
-          return (
-            <li key={`${o.strategy}-${o.loan_id}`} className="px-4 py-3">
-              <div className="flex items-start gap-3">
-                <MerchantLogo
-                  domain={o.merchant_domain}
-                  name={o.merchant}
-                  size={36}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded ${strategyTone.chip}`}
-                    >
-                      {strategyLabel}
-                    </span>
-                    {o.closes_plan && (
-                      <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                        Closes plan
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[14px] font-semibold text-[#0A2540] mt-1 leading-snug">
-                    {o.headline}
-                  </div>
-                  <div className="text-[12px] text-gray-600 mt-1 leading-snug">
-                    {o.rationale}
-                  </div>
-                  <div className="flex items-center gap-3 text-[11px] text-gray-500 mt-1.5 flex-wrap">
-                    <span>
-                      Apply{" "}
-                      <span className="font-semibold text-[#0A2540]">
-                        {formatMoney(o.apply_amount_usd)}
-                      </span>{" "}
-                      to {o.merchant}
-                    </span>
-                    <span className="text-gray-300">·</span>
-                    <span>{aprLabel}</span>
-                    {o.est_interest_saved_usd > 0 && (
-                      <>
-                        <span className="text-gray-300">·</span>
-                        <span>
-                          Save ~
-                          <span className="font-semibold text-emerald-700">
-                            {formatMoney(o.est_interest_saved_usd)}
-                          </span>{" "}
-                          interest
-                        </span>
-                      </>
-                    )}
-                    {o.est_months_saved > 0 && (
-                      <>
-                        <span className="text-gray-300">·</span>
-                        <span>
-                          ~{o.est_months_saved} mo{o.est_months_saved === 1 ? "" : "s"} sooner
-                        </span>
-                      </>
-                    )}
-                    {o.leftover_usd > 0.005 && (
-                      <>
-                        <span className="text-gray-300">·</span>
-                        <span>
-                          {formatMoney(o.leftover_usd)} left over
-                        </span>
-                      </>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onPick(
-                        o.closes_plan
-                          ? `Pay off my ${o.merchant} loan in full`
-                          : `Pay an extra ${formatMoney(o.apply_amount_usd)} toward my ${o.merchant} plan`
-                      )
-                    }
-                    className="mt-2.5 text-[12px] font-semibold text-white px-3.5 py-1.5 rounded-full hover:opacity-90 transition"
-                    style={{
-                      background:
-                        top && top.rank === o.rank ? ACCENT : "#0A2540",
-                    }}
-                  >
-                    {o.closes_plan
-                      ? `Pay off ${o.merchant}`
-                      : `Apply to ${o.merchant}`}
-                  </button>
-                </div>
-              </div>
-            </li>
-          );
-        })}
+        {options.map((o) => (
+          <OptimizationOptionRow
+            key={`${o.strategy}-${o.rank}`}
+            option={o}
+            isTop={top?.rank === o.rank}
+            onPick={onPick}
+          />
+        ))}
       </ul>
 
       <div className="px-4 py-2 text-[10px] text-gray-400 leading-snug">
@@ -3196,15 +3183,293 @@ function ServicingOptimizationCard({
   );
 }
 
+/**
+ * Single row of the optimization card. Branches on whether the option is a
+ * single-plan move or a multi-plan allocation:
+ *   - Single plan → merchant logo + headline + 1 CTA ("Apply to X")
+ *   - allocate_across → no single logo (it's a portfolio move); instead,
+ *     a stacked breakdown of legs with one CTA per leg. Each CTA fires
+ *     the same per-plan action the user could trigger individually — so
+ *     authorization stays on the existing single-plan WebAuthn surface
+ *     and we don't need a "bulk authorize" path on the backend.
+ */
+function OptimizationOptionRow({
+  option,
+  isTop,
+  onPick,
+}: {
+  option: OptimizationOption;
+  isTop: boolean;
+  onPick: (text: string) => void;
+}) {
+  const strategyLabel = strategyLabelFor(option.strategy);
+  const strategyTone = strategyToneFor(option.strategy);
+  const isAllocation =
+    option.strategy === "allocate_across" &&
+    option.allocation_legs &&
+    option.allocation_legs.length > 0;
+
+  return (
+    <li className="px-4 py-3">
+      <div className="flex items-start gap-3">
+        {isAllocation ? (
+          <div
+            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: ACCENT }}
+            aria-hidden
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="white"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 6h18" />
+              <path d="M3 12h18" />
+              <path d="M3 18h18" />
+            </svg>
+          </div>
+        ) : (
+          <MerchantLogo
+            domain={option.merchant_domain}
+            name={option.merchant}
+            size={36}
+          />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={`text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded ${strategyTone.chip}`}
+            >
+              {strategyLabel}
+            </span>
+            {isTop && (
+              <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200">
+                Recommended
+              </span>
+            )}
+            {!isAllocation && option.closes_plan && (
+              <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                Closes plan
+              </span>
+            )}
+            {isAllocation && typeof option.plans_closed_count === "number" && (
+              <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                Closes {option.plans_closed_count} plans
+              </span>
+            )}
+          </div>
+          <div className="text-[14px] font-semibold text-[#0A2540] mt-1 leading-snug">
+            {option.headline}
+          </div>
+          <div className="text-[12px] text-gray-600 mt-1 leading-snug">
+            {option.rationale}
+          </div>
+
+          {isAllocation && option.allocation_legs ? (
+            <AllocationBreakdown
+              legs={option.allocation_legs}
+              totalApplied={option.apply_amount_usd}
+              leftover={option.leftover_usd}
+              estInterestSaved={option.est_interest_saved_usd}
+              onPick={onPick}
+              isTop={isTop}
+            />
+          ) : (
+            <SinglePlanFooter option={option} onPick={onPick} isTop={isTop} />
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function SinglePlanFooter({
+  option,
+  isTop,
+  onPick,
+}: {
+  option: OptimizationOption;
+  isTop: boolean;
+  onPick: (text: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-3 text-[11px] text-gray-500 mt-1.5 flex-wrap">
+        <span>
+          Apply{" "}
+          <span className="font-semibold text-[#0A2540]">
+            {formatMoney(option.apply_amount_usd)}
+          </span>{" "}
+          to {option.merchant}
+        </span>
+        <span className="text-gray-300">·</span>
+        <span>{formatAprBps(option.apr_bps)}</span>
+        {option.est_interest_saved_usd > 0 && (
+          <>
+            <span className="text-gray-300">·</span>
+            <span>
+              Save ~
+              <span className="font-semibold text-emerald-700">
+                {formatMoney(option.est_interest_saved_usd)}
+              </span>{" "}
+              interest
+            </span>
+          </>
+        )}
+        {option.est_months_saved > 0 && (
+          <>
+            <span className="text-gray-300">·</span>
+            <span>
+              ~{option.est_months_saved} mo{option.est_months_saved === 1 ? "" : "s"} sooner
+            </span>
+          </>
+        )}
+        {option.leftover_usd > 0.005 && (
+          <>
+            <span className="text-gray-300">·</span>
+            <span>{formatMoney(option.leftover_usd)} left over</span>
+          </>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() =>
+          onPick(
+            option.closes_plan
+              ? `Pay off my ${option.merchant} loan in full`
+              : `Pay an extra ${formatMoney(option.apply_amount_usd)} toward my ${option.merchant} plan`
+          )
+        }
+        className="mt-2.5 text-[12px] font-semibold text-white px-3.5 py-1.5 rounded-full hover:opacity-90 transition"
+        style={{ background: isTop ? ACCENT : "#0A2540" }}
+      >
+        {option.closes_plan
+          ? `Pay off ${option.merchant}`
+          : `Apply to ${option.merchant}`}
+      </button>
+    </>
+  );
+}
+
+function AllocationBreakdown({
+  legs,
+  totalApplied,
+  leftover,
+  estInterestSaved,
+  isTop,
+  onPick,
+}: {
+  legs: AllocationLeg[];
+  totalApplied: number;
+  leftover: number;
+  estInterestSaved: number;
+  isTop: boolean;
+  onPick: (text: string) => void;
+}) {
+  return (
+    <div className="mt-2 rounded-xl border border-gray-200 bg-gray-50/60 overflow-hidden">
+      <ul className="divide-y divide-gray-200">
+        {legs.map((leg, i) => (
+          <li
+            key={`${leg.loan_id}-${i}`}
+            className="px-3 py-2 flex items-center gap-2.5"
+          >
+            <MerchantLogo
+              domain={leg.merchant_domain}
+              name={leg.merchant}
+              size={28}
+            />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[13px] font-semibold text-[#0A2540] truncate">
+                  {leg.merchant}
+                </span>
+                {leg.closes_plan && (
+                  <span className="text-[9px] uppercase tracking-wide font-bold px-1 py-px rounded bg-emerald-100 text-emerald-800">
+                    Closes
+                  </span>
+                )}
+                <AprChip bps={leg.apr_bps} size="xs" />
+              </div>
+              <div className="text-[11px] text-gray-500">
+                {leg.closes_plan
+                  ? `Pay full ${formatMoney(leg.apply_amount_usd)} balance`
+                  : `Reduce by ${formatMoney(leg.apply_amount_usd)}`}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                onPick(
+                  leg.closes_plan
+                    ? `Pay off my ${leg.merchant} loan in full`
+                    : `Pay an extra ${formatMoney(leg.apply_amount_usd)} toward my ${leg.merchant} plan`
+                )
+              }
+              className="text-[11px] font-semibold text-white px-3 py-1 rounded-full shrink-0 hover:opacity-90 transition"
+              style={{
+                background: isTop && i === 0 ? ACCENT : "#0A2540",
+              }}
+            >
+              {leg.closes_plan ? "Pay off" : "Apply"}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="px-3 py-2 text-[11px] text-gray-500 flex items-center gap-3 flex-wrap bg-white">
+        <span>
+          Total applied{" "}
+          <span className="font-semibold text-[#0A2540]">
+            {formatMoney(totalApplied)}
+          </span>
+        </span>
+        {estInterestSaved >= 1 && (
+          <>
+            <span className="text-gray-300">·</span>
+            <span>
+              Save ~
+              <span className="font-semibold text-emerald-700">
+                {formatMoney(estInterestSaved)}
+              </span>{" "}
+              interest
+            </span>
+          </>
+        )}
+        {leftover > 0.005 && (
+          <>
+            <span className="text-gray-300">·</span>
+            <span>{formatMoney(leftover)} left over</span>
+          </>
+        )}
+      </div>
+      {/* Each leg authorizes independently — that's the whole point of
+          surfacing them as separate buttons. The user reviews the strategy
+          here, then taps each Pay/Apply to fire the existing single-plan
+          WebAuthn assertion. No bulk-authorize path required, so the
+          servicing executor surface stays unchanged. */}
+      <div className="px-3 py-1.5 text-[10px] text-gray-400 leading-snug bg-white border-t border-gray-100">
+        Each step authorizes with Face ID. Tap them in order.
+      </div>
+    </div>
+  );
+}
+
 function strategyLabelFor(s: OptimizationStrategy): string {
   if (s === "save_interest") return "Save interest";
   if (s === "clear_plan") return "Close a plan";
+  if (s === "allocate_across") return "Spread across plans";
   return "Free cash flow";
 }
 
 function strategyToneFor(s: OptimizationStrategy): { chip: string } {
   if (s === "save_interest") return { chip: "bg-violet-100 text-violet-800" };
   if (s === "clear_plan") return { chip: "bg-emerald-100 text-emerald-800" };
+  if (s === "allocate_across") return { chip: "bg-indigo-100 text-indigo-800" };
   return { chip: "bg-blue-100 text-blue-800" };
 }
 
@@ -3483,8 +3748,11 @@ function ActivePlanRow({ plan }: { plan: ActivePlan }) {
     <div className="px-4 py-3 flex items-center gap-3">
       <MerchantAvatar name={plan.merchant} />
       <div className="flex-1 min-w-0">
-        <div className="text-[14px] font-semibold text-[#0A2540]">{plan.merchant}</div>
-        <div className="text-[12px] text-gray-500">${plan.balance_usd} remaining · {plan.months_remaining} months left</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[14px] font-semibold text-[#0A2540]">{plan.merchant}</span>
+          {typeof plan.apr_bps === "number" && <AprChip bps={plan.apr_bps} size="xs" />}
+        </div>
+        <div className="text-[12px] text-gray-500 mt-0.5">${plan.balance_usd} remaining · {plan.months_remaining} months left</div>
       </div>
       <div className="text-right flex-shrink-0">
         <div className="text-[14px] font-semibold text-[#0A2540]">${plan.monthly_payment_usd}/mo</div>

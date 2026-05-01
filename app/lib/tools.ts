@@ -187,6 +187,10 @@ function checkAffirmCapacity() {
       balance_usd: p.balance,
       monthly_payment_usd: p.monthlyPayment,
       months_remaining: p.termMonthsRemaining,
+      // APR exposed on the snapshot so the LLM can answer "which plan
+      // costs the most to carry?" without a second tool call. Surfaced
+      // as basis points to keep precision; UI formats to "x.xx% APR".
+      apr_bps: p.aprBps,
       next_payment_date: p.nextPaymentDate,
     })),
     total_monthly_obligation_usd: DEMO_USER.activePlans.reduce(

@@ -59,6 +59,12 @@ export type LoanView = {
   currentBalanceUsd: number;
   monthlyPaymentUsd: number;
   monthsRemaining: number;
+  /**
+   * Plan APR in basis points (0 for Pay-in-4 / 0% promo plans). Surfaced on
+   * Plan rows so the user can compare cost-to-carry across plans without
+   * needing the agent to call it out. Mirrors ActivePlan.aprBps.
+   */
+  aprBps: number;
   /** Empty string when the loan is paid off. */
   nextPaymentDateIso: string;
   nextPaymentLabel: string;
@@ -112,6 +118,7 @@ export function buildLoanViews(
       currentBalanceUsd: plan.balance,
       monthlyPaymentUsd: plan.monthlyPayment,
       monthsRemaining: plan.termMonthsRemaining,
+      aprBps: plan.aprBps,
       nextPaymentDateIso: plan.nextPaymentDueISO,
       nextPaymentLabel: plan.nextPaymentDate,
       status: "active",
@@ -189,6 +196,9 @@ export function buildLoanViews(
     currentBalanceUsd: 0,
     monthlyPaymentUsd: p.monthlyPayment,
     monthsRemaining: 0,
+    // Closed-plan APR isn't meaningful for the user (it's already paid),
+    // so we report 0 — the LoanCard hides the APR chip on paid-off rows.
+    aprBps: 0,
     nextPaymentDateIso: "",
     nextPaymentLabel: "Paid in full",
     status: "paid_off",

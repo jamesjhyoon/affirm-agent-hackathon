@@ -228,7 +228,7 @@ export function servicingReschedulePreview(input: {
   if (cycleLimitHit) {
     blocked = {
       code: "RSH-CYCLE_LIMIT",
-      message: `${loan.merchant} has already been rescheduled this billing cycle. Self-serve allows ${RESCHEDULE_POLICY.maxPerCycle} reschedule per cycle — additional changes need a servicing rep.`,
+      message: `${loan.merchant}'s next payment has already been moved once. Self-serve allows ${RESCHEDULE_POLICY.maxPerCycle} reschedule per upcoming payment — additional changes need a servicing rep.`,
       latest_eligible_iso: latest.toISOString().slice(0, 10),
     };
   } else if (requested && requested > latest) {
@@ -279,7 +279,7 @@ export function servicingReschedulePreview(input: {
         })
       : null,
     request_outcome: requestOutcome,
-    policy_note: `Reschedule allowed up to ${maxSlipDays} days past due, ${RESCHEDULE_POLICY.maxPerCycle} per billing cycle.`,
+    policy_note: `Reschedule allowed up to ${maxSlipDays} days past due. Each upcoming payment can be moved once before requiring a servicing rep.`,
   };
 }
 
@@ -318,7 +318,7 @@ export function servicingExecuteReschedule(input: {
   if (used >= RESCHEDULE_POLICY.maxPerCycle) {
     return {
       error: "RSH-CYCLE_LIMIT",
-      message: `${loan.merchant} has already been rescheduled this billing cycle.`,
+      message: `${loan.merchant}'s next payment has already been moved once.`,
       code: "RSH-CYCLE_LIMIT",
     };
   }
@@ -477,6 +477,13 @@ export type TriagePlanRow = {
   next_due_label: string;
   days_until_due: number;
   monthly_payment_usd: number;
+  /**
+   * Plan APR in basis points. Surfaced on triage rows so the user can see
+   * "moving Marriott costs more to carry than moving Nike" at a glance — it's
+   * one of the inputs to the recommendation but the user gets to see the
+   * data the engine used.
+   */
+  apr_bps: number;
   reschedule_eligible: boolean;
   /** Set when reschedule_eligible === false. Examples: RSH-CYCLE_LIMIT. */
   reschedule_block_code?: string;
@@ -577,11 +584,12 @@ export function servicingTriageOptions(_input: {
         next_due_label: labelForDate(due),
         days_until_due: daysUntil,
         monthly_payment_usd: p.monthlyPayment,
+        apr_bps: p.aprBps,
         reschedule_eligible: !cycleLimitHit,
       };
       if (cycleLimitHit) {
         row.reschedule_block_code = "RSH-CYCLE_LIMIT";
-        row.reschedule_block_reason = `Already rescheduled ${used} time${used === 1 ? "" : "s"} this billing cycle.`;
+        row.reschedule_block_reason = `This upcoming payment has already been moved ${used} time${used === 1 ? "" : "s"}. Self-serve allows one reschedule per payment.`;
       } else {
         row.latest_eligible_iso = latest.toISOString().slice(0, 10);
         row.latest_eligible_label = labelForDate(latest);
@@ -627,7 +635,7 @@ export function servicingTriageOptions(_input: {
       merchant: fallback.merchant,
       monthly_payment_usd: fallback.monthly_payment_usd,
       current_due_label: fallback.next_due_label,
-      rationale: `Every plan has already used its reschedule this cycle, so a reschedule isn't on the table. Paying ${fallback.merchant} early is the cleanest way to take that one off the board.`,
+      rationale: `Every upcoming payment has already been moved once, so reschedule isn't on the table. Paying ${fallback.merchant} early is the cleanest way to take that one off the board.`,
     };
   }
 
@@ -637,7 +645,7 @@ export function servicingTriageOptions(_input: {
     window_label: windowLabel,
     plans: rows,
     recommended,
-    policy_note: `Reschedule allowed up to ${RESCHEDULE_POLICY.windowDays} days past due, ${RESCHEDULE_POLICY.maxPerCycle} per billing cycle.`,
+    policy_note: `Reschedule allowed up to ${RESCHEDULE_POLICY.windowDays} days past due. Each upcoming payment can be moved once before requiring a servicing rep.`,
   };
 }
 
@@ -648,7 +656,23 @@ export function servicingTriageOptions(_input: {
 export type OptimizationStrategy =
   | "save_interest"
   | "clear_plan"
-  | "free_cash_flow";
+  | "free_cash_flow"
+  | "allocate_across";
+
+/**
+ * One leg of a multi-plan allocation. Each leg is independently authorized
+ * (single-plan WebAuthn assertion). The card sequences them — there's no
+ * "bulk authorize" path on purpose. We preserve per-action audit + the
+ * existing executor surface.
+ */
+export type AllocationLeg = {
+  loan_id: string;
+  merchant: string;
+  merchant_domain: string;
+  apply_amount_usd: number;
+  closes_plan: boolean;
+  apr_bps: number;
+};
 
 export type OptimizationOption = {
   /** 1-indexed rank within the result set. The recommended option is rank 1. */
@@ -681,6 +705,16 @@ export type OptimizationOption = {
   est_months_saved: number;
   headline: string;
   rationale: string;
+  /**
+   * Set ONLY when strategy === "allocate_across". When present, the UI
+   * renders a multi-leg breakdown and replaces the single-plan CTA with
+   * one button per leg. The single-plan fields above (loan_id, merchant,
+   * apr_bps, etc.) reflect the FIRST leg as an anchor for legacy code
+   * paths; UI consumers should branch on allocation_legs instead.
+   */
+  allocation_legs?: AllocationLeg[];
+  /** Number of plans this option fully closes. Convenience for the card. */
+  plans_closed_count?: number;
 };
 
 export type ServicingOptimizationResult =
@@ -697,20 +731,27 @@ const DEFAULT_OPTIMIZATION_AMOUNT_USD = 500;
 
 /**
  * Cross-plan extra-cash optimizer. Given a hypothetical extra dollar amount,
- * returns three ranked allocation options — each driven by a DIFFERENT goal
- * the user might have:
+ * returns up to four ranked allocation options — each driven by a DIFFERENT
+ * goal the user might have:
  *
- *   1. save_interest: maximize $ saved on interest. Picks the highest-APR
- *      plan and applies as much as possible. Economically optimal answer.
- *      For any user with a 21.99% APR loan and a 0% APR loan, this should
- *      always win on raw math.
+ *   1. allocate_across (CONDITIONAL): split the cash across multiple plans
+ *      to close 2+ plans in one move + apply leftover to the highest-APR
+ *      plan still standing. Only surfaced when the budget can fully close
+ *      at least two plans (greedy by smallest balance) — otherwise it
+ *      collapses to clear_plan and we'd rather not show a redundant row.
+ *      When present, this becomes rank 1 because closing multiple plans
+ *      dominates any single-plan move on stated user goal ("deploy this
+ *      cash optimally"). It's the answer Manage absolutely cannot give.
  *
- *   2. clear_plan: knock a plan off the board entirely. Picks the smallest
- *      plan that fits within amount_usd. Psychologically the move most users
- *      actually make (debt-snowball preference). Surfaced because the user
- *      may explicitly want this.
+ *   2. save_interest: maximize $ saved on interest. Picks the highest-APR
+ *      plan and applies as much as possible. Economically optimal answer
+ *      for a single-plan move.
  *
- *   3. free_cash_flow: reduce near-term cash burden. Picks the plan that's
+ *   3. clear_plan: knock a plan off the board entirely. Picks the smallest
+ *      plan that fits within amount_usd. Psychologically the move most
+ *      users actually make (debt-snowball preference).
+ *
+ *   4. free_cash_flow: reduce near-term cash burden. Picks the plan that's
  *      due soonest and applies as many monthly payments as the amount can
  *      cover. Best when the user is cash-tight in the next 1-2 weeks.
  *
@@ -718,7 +759,7 @@ const DEFAULT_OPTIMIZATION_AMOUNT_USD = 500;
  * cannot perform. Manage shows balances, dates, and APRs separately. It
  * cannot rank "where should I put $500" because the right answer depends
  * on the user's goal — and only the agent can ask one sentence to figure
- * out which goal applies. The card surfaces all three so the user picks
+ * out which goal applies. The card surfaces all options so the user picks
  * with full visibility into the trade-off.
  *
  * The math is intentionally simple. Real shipping would route through the
@@ -856,15 +897,110 @@ export function servicingOptimizationOptions(input: {
     rationale: `${cashTarget.merchant} is your soonest payment (${moneyShort(cashTarget.monthly)} due ${labelForIso(cashTarget.next_due_iso)}). Applying ${moneyShort(cashPart.apply_amount_usd)} covers ~${cashPart.est_months_saved} upcoming installment${cashPart.est_months_saved === 1 ? "" : "s"}, which is the fastest way to give yourself breathing room next week.`,
   };
 
-  // Order: 1) save_interest (economically optimal default), 2) clear_plan,
-  // 3) free_cash_flow. Same plan can appear in two slots if the math collapses
-  // — that's deliberate; we still want the user to see the goal-framed
-  // rationale even when the merchant is the same.
-  const ordered: OptimizationOption[] = [
-    interestOption,
-    clearOption,
-    cashOption,
-  ].map((o, i) => ({ ...o, rank: i + 1 }));
+  // Allocation strategy: greedy-close smallest plans first; apply remainder
+  // to the highest-APR remaining plan. Only surface the option when it
+  // closes 2+ plans — otherwise it's redundant with clear_plan and we'd
+  // be padding the card.
+  const sortedAsc = [...lite].sort((a, b) => a.balance - b.balance);
+  const closingLegs: AllocationLeg[] = [];
+  let remaining = amount;
+  const closedIds = new Set<string>();
+  for (const p of sortedAsc) {
+    if (remaining < p.balance) break;
+    closingLegs.push({
+      loan_id: p.id,
+      merchant: p.merchant,
+      merchant_domain: p.merchant_domain,
+      apply_amount_usd: Math.round(p.balance * 100) / 100,
+      closes_plan: true,
+      apr_bps: p.apr_bps,
+    });
+    closedIds.add(p.id);
+    remaining = Math.round((remaining - p.balance) * 100) / 100;
+  }
+
+  // If we have leftover and at least one plan we didn't close, tail-apply it
+  // to the highest-APR remaining plan (most interest savings per dollar).
+  let tailLeg: AllocationLeg | null = null;
+  if (closingLegs.length >= 2 && remaining > 0.005) {
+    const remainingPlans = lite.filter((p) => !closedIds.has(p.id));
+    remainingPlans.sort((a, b) => {
+      if (b.apr_bps !== a.apr_bps) return b.apr_bps - a.apr_bps;
+      return b.balance - a.balance;
+    });
+    const target = remainingPlans[0];
+    if (target) {
+      const apply = Math.min(remaining, target.balance);
+      tailLeg = {
+        loan_id: target.id,
+        merchant: target.merchant,
+        merchant_domain: target.merchant_domain,
+        apply_amount_usd: Math.round(apply * 100) / 100,
+        closes_plan: apply >= target.balance,
+        apr_bps: target.apr_bps,
+      };
+    }
+  }
+
+  const allocationLegs: AllocationLeg[] = tailLeg
+    ? [...closingLegs, tailLeg]
+    : closingLegs;
+
+  // Estimate combined interest saved across all legs of the allocation.
+  const allocInterestSaved = allocationLegs.reduce((sum, leg) => {
+    const plan = lite.find((p) => p.id === leg.loan_id);
+    if (!plan || plan.apr_bps === 0) return sum;
+    const yearsRemaining = plan.months_remaining / 12;
+    const apr = plan.apr_bps / 10000;
+    return sum + leg.apply_amount_usd * apr * yearsRemaining * 0.5;
+  }, 0);
+
+  let allocOption: OptimizationOption | null = null;
+  if (closingLegs.length >= 2) {
+    const closesCount = allocationLegs.filter((l) => l.closes_plan).length;
+    const closedNames = closingLegs.map((l) => l.merchant).join(" and ");
+    const tailFragment = tailLeg
+      ? ` and putting ${moneyShort(tailLeg.apply_amount_usd)} against ${tailLeg.merchant} at ${aprPctLabel(tailLeg.apr_bps)}`
+      : "";
+    const interestFragment =
+      allocInterestSaved >= 1
+        ? ` Saves roughly ${moneyShort(allocInterestSaved)} in interest along the way.`
+        : "";
+    const totalApplied = allocationLegs.reduce(
+      (s, l) => s + l.apply_amount_usd,
+      0
+    );
+    const leftover = Math.round((amount - totalApplied) * 100) / 100;
+    const headline = `Close ${closesCount} plan${closesCount === 1 ? "" : "s"} in one move`;
+    const rationale = `Spread ${moneyShort(amount)} to fully close ${closedNames}${tailFragment}.${interestFragment}`;
+    const anchor = closingLegs[0];
+    allocOption = {
+      rank: 0,
+      strategy: "allocate_across",
+      loan_id: anchor.loan_id,
+      merchant: anchor.merchant,
+      merchant_domain: anchor.merchant_domain,
+      apr_bps: anchor.apr_bps,
+      apply_amount_usd: Math.round(totalApplied * 100) / 100,
+      leftover_usd: Math.max(0, leftover),
+      remaining_balance_after_usd: 0,
+      closes_plan: false, // closes_plan is per-leg; UI uses plans_closed_count
+      est_interest_saved_usd: Math.round(allocInterestSaved * 100) / 100,
+      est_months_saved: 0,
+      headline,
+      rationale,
+      allocation_legs: allocationLegs,
+      plans_closed_count: closesCount,
+    };
+  }
+
+  // Order: when an allocation option exists it leads — closing 2+ plans
+  // beats any single-plan move on most users' stated goals. Otherwise
+  // fall back to the original (save_interest, clear_plan, free_cash_flow).
+  const baseOrdered = allocOption
+    ? [allocOption, interestOption, clearOption, cashOption]
+    : [interestOption, clearOption, cashOption];
+  const ordered = baseOrdered.map((o, i) => ({ ...o, rank: i + 1 }));
 
   return {
     ok: true as const,
