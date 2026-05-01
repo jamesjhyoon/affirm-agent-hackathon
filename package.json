@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "evals": "node --experimental-strip-types --no-warnings evals/run.ts",
+    "evals:filter": "node --experimental-strip-types --no-warnings evals/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",

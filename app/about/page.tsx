@@ -15,6 +15,30 @@
  */
 
 import Link from "next/link";
+import evalsResults from "@/evals/results.json";
+import evalsPrompts from "@/evals/prompts.json";
+
+type EvalsResults = {
+  status?: string;
+  ranAt: string | null;
+  total: number;
+  passed: number;
+  failed: number;
+  passRate: number;
+  byCategory: Array<{
+    category: string;
+    total: number;
+    passed: number;
+    passRate: number;
+  }>;
+};
+
+type EvalsPrompts = {
+  categories: Record<string, string>;
+};
+
+const EVALS_RESULTS = evalsResults as EvalsResults;
+const EVALS_PROMPTS = evalsPrompts as EvalsPrompts;
 
 export const metadata = {
   title: "About this build · Affirm Servicing Assistant",
@@ -230,6 +254,39 @@ export default function AboutPage() {
         </Section>
 
         <Section
+          eyebrow="Eval suite"
+          title="Routing, scope, and adversarial coverage."
+          body={[
+            "A 39-prompt regression set lives at evals/prompts.json. The runner sends each prompt to the production system prompt and tool definitions, captures the first tool_use block, and asserts on tool name, arg shape, and forbidden text. The production chat route and the eval suite import the EXACT same prompt template and tool schemas — there's no drift between what the demo runs and what the tests cover.",
+            "What the suite tests:",
+          ]}
+        >
+          <ul className="mt-3 space-y-2 text-[13px] text-[#3a4a64] leading-relaxed">
+            {Object.entries(EVALS_PROMPTS.categories).map(([cat, desc]) => (
+              <li key={cat} className="flex gap-2">
+                <span className="font-mono text-[12px] text-[#0A2540] font-semibold shrink-0 mt-[1px]">
+                  {cat}
+                </span>
+                <span>·</span>
+                <span>{desc}</span>
+              </li>
+            ))}
+          </ul>
+
+          <EvalSuiteSummary results={EVALS_RESULTS} />
+
+          <p className="mt-4 text-[12px] text-gray-500 leading-relaxed">
+            The runner is{" "}
+            <code className="bg-gray-100 px-1 py-0.5 rounded text-[11.5px]">
+              npm run evals
+            </code>{" "}
+            (sequential, ~2-4 minutes for 39 prompts at ~$0.30 per run). In a
+            shipped v1 this would gate every prompt change in CI; new tools or
+            new scope adjustments add new tests before they ship.
+          </p>
+        </Section>
+
+        <Section
           eyebrow="Time-to-prod cut"
           title="What it would take to ship a real v1."
           body={[]}
@@ -389,6 +446,108 @@ function HonestyCard({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function EvalSuiteSummary({ results }: { results: EvalsResults }) {
+  const notRun = results.status === "not_yet_executed" || !results.ranAt;
+  const ratePct = Math.round(results.passRate * 100);
+  const lastRunLabel = results.ranAt
+    ? new Date(results.ranAt).toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "never";
+
+  return (
+    <div className="mt-5 rounded-2xl border border-gray-200 overflow-hidden">
+      <div
+        className="px-4 py-3"
+        style={{
+          background: notRun
+            ? "linear-gradient(135deg, #6b7280 0%, #4b5563 100%)"
+            : ratePct >= 90
+            ? "linear-gradient(135deg, #0f7a4e 0%, #16a870 100%)"
+            : ratePct >= 70
+            ? "linear-gradient(135deg, #b45309 0%, #f59e0b 100%)"
+            : "linear-gradient(135deg, #991b1b 0%, #dc2626 100%)",
+        }}
+      >
+        <div className="text-[10px] uppercase tracking-wide opacity-80 font-semibold text-white">
+          Latest run
+        </div>
+        <div className="flex items-baseline gap-2 mt-0.5 text-white">
+          {notRun ? (
+            <>
+              <span className="text-[20px] font-bold leading-tight">
+                Awaiting first run
+              </span>
+              <span className="text-[12px] opacity-90">
+                {results.total} tests staged
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-[28px] font-bold leading-tight">
+                {ratePct}%
+              </span>
+              <span className="text-[13px] opacity-90">
+                {results.passed}/{results.total} passing
+              </span>
+            </>
+          )}
+        </div>
+        {!notRun && (
+          <div className="text-[11px] opacity-85 text-white mt-1">
+            Last run {lastRunLabel}
+          </div>
+        )}
+      </div>
+      <div className="bg-white">
+        <table className="w-full text-[12.5px]">
+          <tbody>
+            {results.byCategory.map((row) => {
+              const pct = Math.round(row.passRate * 100);
+              const fill = notRun
+                ? "bg-gray-200"
+                : pct >= 90
+                ? "bg-emerald-500"
+                : pct >= 70
+                ? "bg-amber-500"
+                : "bg-red-500";
+              return (
+                <tr key={row.category} className="border-t border-gray-100">
+                  <td className="px-4 py-2 align-middle">
+                    <code className="text-[11.5px] text-[#0A2540] font-semibold">
+                      {row.category}
+                    </code>
+                  </td>
+                  <td className="px-2 py-2 align-middle w-32">
+                    <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                      {!notRun && (
+                        <div
+                          className={`h-full ${fill}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-right align-middle whitespace-nowrap text-[#3a4a64]">
+                    {row.passed}/{row.total}{" "}
+                    <span className="text-gray-400">
+                      {notRun ? "" : `· ${pct}%`}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,20 @@
+{
+  "status": "not_yet_executed",
+  "note": "Run `npm run evals` from a terminal with ANTHROPIC_API_KEY set to populate this file with real results. Each run rewrites it with the latest pass-rate snapshot.",
+  "ranAt": null,
+  "total": 39,
+  "passed": 0,
+  "failed": 0,
+  "passRate": 0,
+  "byCategory": [
+    { "category": "ambiguous_merchant", "total": 3, "passed": 0, "passRate": 0 },
+    { "category": "date_hallucination", "total": 1, "passed": 0, "passRate": 0 },
+    { "category": "date_parsing", "total": 5, "passed": 0, "passRate": 0 },
+    { "category": "extra_cash_optimization", "total": 5, "passed": 0, "passRate": 0 },
+    { "category": "policy_contrast", "total": 4, "passed": 0, "passRate": 0 },
+    { "category": "prompt_injection", "total": 5, "passed": 0, "passRate": 0 },
+    { "category": "routing", "total": 10, "passed": 0, "passRate": 0 },
+    { "category": "scope_deflection", "total": 6, "passed": 0, "passRate": 0 }
+  ],
+  "results": []
+}
