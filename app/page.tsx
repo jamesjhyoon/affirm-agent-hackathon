@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import {
   authorizeAndExecute,
@@ -11,6 +11,7 @@ import type {
   ServicingActionResult,
 } from "./lib/servicing-executor";
 import type { LoanOverride, LoanView } from "./lib/loans";
+import { DEMO_USER, type ActivePlan as DemoActivePlan } from "./lib/mockData";
 
 type AssistantBlock =
   | { kind: "text"; content: string }
@@ -332,6 +333,51 @@ export default function Home() {
 
   const searchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const authError = searchParams?.get("error") ?? undefined;
+
+  // Track the loan_id of every plan the user has paid off in this session.
+  // Used by the post-action "next step" chips to compute remaining-plan
+  // state ("Marriott is now your highest rate") without round-tripping to
+  // the server. Reschedule and pay-installment don't close a plan, so they
+  // don't enter this set.
+  const paidOffLoanIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      for (const block of msg.blocks) {
+        if (
+          block.kind === "executed" &&
+          !("error" in block.result) &&
+          block.result.kind === "payoff"
+        ) {
+          set.add(block.result.loan_id);
+        }
+      }
+    }
+    return set;
+  }, [messages]);
+
+  // Location of the most-recent successful executed block (msg index +
+  // block index). The "next step" chips render ONLY on this block — older
+  // executed blocks don't show chips, so the user always knows which
+  // action the suggestions are responding to. Tuple is null on first load
+  // and any time the latest block isn't a successful action (e.g. pure
+  // text response).
+  const latestSuccessfulActionLocation = useMemo<{
+    mi: number;
+    bi: number;
+  } | null>(() => {
+    for (let mi = messages.length - 1; mi >= 0; mi--) {
+      const msg = messages[mi];
+      if (msg.role !== "assistant") continue;
+      for (let bi = msg.blocks.length - 1; bi >= 0; bi--) {
+        const b = msg.blocks[bi];
+        if (b.kind === "executed" && !("error" in b.result)) {
+          return { mi, bi };
+        }
+      }
+    }
+    return null;
+  }, [messages]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -682,6 +728,11 @@ export default function Home() {
                       executionState={executionState}
                       onAuthorize={runServicingAction}
                       onViewInManage={() => setView("manage")}
+                      isLatestSuccessfulAction={
+                        latestSuccessfulActionLocation?.mi === i &&
+                        latestSuccessfulActionLocation?.bi === bi
+                      }
+                      paidOffLoanIds={paidOffLoanIds}
                     />
                   ))}
                   <div className="text-[11px] text-[#8E8E93] pl-1">Affirm Assistant</div>
@@ -3473,6 +3524,165 @@ function strategyToneFor(s: OptimizationStrategy): { chip: string } {
   return { chip: "bg-blue-100 text-blue-800" };
 }
 
+type NextStepChip = {
+  label: string;
+  prompt: string;
+  /**
+   * Visual emphasis. The PRIMARY chip is the contextual recommendation
+   * we'd actually take — it gets accent borders. SECONDARY is a generic
+   * follow-up offered as an alternative. OFF_RAMP is the "I'm set" exit;
+   * styled muted so the user always sees a clear way to end the loop.
+   */
+  variant: "primary" | "secondary" | "off_ramp";
+};
+
+/**
+ * Format an APR in basis points for the chip label. Inline rather than
+ * importing AprChip's helper because the chip body can't fit a styled
+ * pill — we just need the text.
+ */
+function aprLabelForChip(bps: number): string {
+  return `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}% APR`;
+}
+
+/**
+ * Compute the post-action "next step" chips. Deterministic — no LLM round
+ * trip — because this is rendered immediately after a success card and
+ * we don't want to add latency to a completed action. The 2 contextual
+ * chips are derived from remaining-plan state (highest-APR plan still
+ * standing, soonest upcoming payment) so they update as plans close.
+ *
+ * Why deterministic and not LLM-generated:
+ *   - A completed action is the worst place to spend a 5-10s LLM round trip.
+ *   - The system prompt forbids generic "anything else?" follow-ups; this
+ *     surface is a contained alternative that hits only when we have
+ *     specific cross-plan information worth surfacing.
+ *   - Keeping it client-side means the suggestions reflect THIS session's
+ *     post-action state, including any payoff that just completed.
+ */
+type ExecutedActionKind = "payoff" | "reschedule" | "pay_installment";
+
+function nextStepChipsFor(
+  actionKind: ExecutedActionKind,
+  actedOnLoanId: string,
+  paidOffLoanIds: Set<string>
+): NextStepChip[] {
+  // Remaining active plans = original demo plans minus anything that's been
+  // paid off this session. The acted-on plan is included for reschedule and
+  // pay-installment (the plan is still active), and excluded for payoff
+  // (it's now in paidOffLoanIds).
+  const remaining = DEMO_USER.activePlans.filter(
+    (p: DemoActivePlan) => !paidOffLoanIds.has(p.id)
+  );
+
+  if (remaining.length === 0) {
+    // User has closed every plan. Nothing else to suggest — only the exit.
+    return [
+      { label: "I'm set for now", prompt: "I'm set for now", variant: "off_ramp" },
+    ];
+  }
+
+  // Highest-APR plan still active. Skip 0% promo plans — there's no
+  // interest savings story there, so suggesting paydown would be weak.
+  const interestBearing = [...remaining]
+    .filter((p) => p.aprBps > 0)
+    .sort((a, b) => b.aprBps - a.aprBps);
+  const highApr = interestBearing[0];
+
+  const chips: NextStepChip[] = [];
+
+  if (actionKind === "payoff") {
+    // After paying off a plan, the natural next move is the highest-rate
+    // plan still standing. If there isn't one (only 0% plans left), fall
+    // back to a generic forward-look on the remaining plans.
+    if (highApr && highApr.id !== actedOnLoanId) {
+      chips.push({
+        label: `Look at ${highApr.merchant} — ${aprLabelForChip(highApr.aprBps)}`,
+        prompt: `What about my ${highApr.merchant} plan?`,
+        variant: "primary",
+      });
+    }
+    chips.push({
+      label: "What else is coming up?",
+      prompt: "What's coming up across my other plans?",
+      variant: "secondary",
+    });
+  } else if (actionKind === "reschedule") {
+    // After moving a payment, the user's primary motivation was usually
+    // cash flow — surface the cross-plan view as the lead suggestion.
+    chips.push({
+      label: "Check my other payments",
+      prompt: "What else is coming up across my plans?",
+      variant: "primary",
+    });
+    if (highApr && highApr.id !== actedOnLoanId) {
+      chips.push({
+        label: `Look at ${highApr.merchant} — ${aprLabelForChip(highApr.aprBps)}`,
+        prompt: `What about my ${highApr.merchant} plan?`,
+        variant: "secondary",
+      });
+    }
+  } else {
+    // pay_installment: similar shape to reschedule, lead with the
+    // cross-plan view.
+    chips.push({
+      label: "What else is coming up?",
+      prompt: "What's coming up across my other plans?",
+      variant: "primary",
+    });
+    if (highApr && highApr.id !== actedOnLoanId) {
+      chips.push({
+        label: `Look at ${highApr.merchant} — ${aprLabelForChip(highApr.aprBps)}`,
+        prompt: `What about my ${highApr.merchant} plan?`,
+        variant: "secondary",
+      });
+    }
+  }
+
+  // Always include the off-ramp last so the user has a one-tap exit.
+  // System prompt has a matching rule that turns "I'm set for now" into
+  // a brief sign-off — no further suggestions, no "anything else?" loop.
+  chips.push({
+    label: "I'm set for now",
+    prompt: "I'm set for now",
+    variant: "off_ramp",
+  });
+
+  return chips;
+}
+
+function NextStepChips({
+  chips,
+  onPick,
+}: {
+  chips: NextStepChip[];
+  onPick: (text: string) => void;
+}) {
+  if (chips.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 px-1 pt-1">
+      {chips.map((chip, i) => {
+        const cls =
+          chip.variant === "primary"
+            ? "bg-white text-[#0A2540] border-[#6959F8]/40 hover:border-[#6959F8] hover:bg-[#F5F4FE] font-semibold"
+            : chip.variant === "off_ramp"
+            ? "bg-transparent text-gray-500 border-transparent hover:text-gray-700 hover:bg-gray-100"
+            : "bg-white text-[#0A2540] border-gray-200 hover:border-gray-300";
+        return (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onPick(chip.prompt)}
+            className={`text-[12px] px-3 py-1.5 rounded-full border transition ${cls}`}
+          >
+            {chip.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function AssistantBlockView({
   block,
   onPickPlan,
@@ -3481,6 +3691,8 @@ function AssistantBlockView({
   executionState,
   onAuthorize,
   onViewInManage,
+  isLatestSuccessfulAction,
+  paidOffLoanIds,
 }: {
   block: AssistantBlock;
   onPickPlan: (label: string, price?: number) => void;
@@ -3489,6 +3701,15 @@ function AssistantBlockView({
   executionState: Record<string, BiometricExecutionState>;
   onAuthorize: (blockId: string, action: ServicingActionParams) => void;
   onViewInManage: () => void;
+  /**
+   * True only on the most-recent successful executed block in the
+   * conversation. Drives whether to render the post-action "next step"
+   * chips — older actions don't show suggestions because the user has
+   * already moved past them.
+   */
+  isLatestSuccessfulAction: boolean;
+  /** Loan IDs the user has paid off in this session (used to compute next-step suggestions). */
+  paidOffLoanIds: Set<string>;
 }) {
   if (block.kind === "text") {
     return (
@@ -3505,8 +3726,15 @@ function AssistantBlockView({
     if ("error" in r) {
       return <ServicingErrorCard title="Servicing" message={r.message ?? String(r.error)} code={"code" in r ? r.code : undefined} />;
     }
-    if (r.kind === "payoff") {
-      return (
+
+    // Compute the next-step chips ONCE for this block. We pass paidOffLoanIds
+    // as a snapshot; the chip helper figures out remaining-plan state and
+    // formats the per-action suggestions deterministically.
+    const chips = isLatestSuccessfulAction
+      ? nextStepChipsFor(r.kind, r.loan_id, paidOffLoanIds)
+      : [];
+    const successCard =
+      r.kind === "payoff" ? (
         <ServicingSuccessCard
           title="Payoff submitted"
           referenceId={r.reference_id}
@@ -3515,10 +3743,7 @@ function AssistantBlockView({
           policyCode={policyCodeToLabel(r.policy_codes?.[0]) || "Paid off"}
           onViewInManage={onViewInManage}
         />
-      );
-    }
-    if (r.kind === "reschedule") {
-      return (
+      ) : r.kind === "reschedule" ? (
         <ServicingSuccessCard
           title="Due date updated"
           referenceId={r.reference_id}
@@ -3527,17 +3752,22 @@ function AssistantBlockView({
           policyCode={policyCodeToLabel(r.policy_codes?.[0]) || "Rescheduled"}
           onViewInManage={onViewInManage}
         />
+      ) : (
+        <ServicingSuccessCard
+          title="Payment submitted"
+          referenceId={r.reference_id}
+          subtitle={`${r.merchant} · ${formatMoney(r.amount_usd)} · ${r.funding_source_label}`}
+          email={r.email}
+          policyCode="Payment submitted"
+          onViewInManage={onViewInManage}
+        />
       );
-    }
+
     return (
-      <ServicingSuccessCard
-        title="Payment submitted"
-        referenceId={r.reference_id}
-        subtitle={`${r.merchant} · ${formatMoney(r.amount_usd)} · ${r.funding_source_label}`}
-        email={r.email}
-        policyCode="Payment submitted"
-        onViewInManage={onViewInManage}
-      />
+      <div className="space-y-2">
+        {successCard}
+        {chips.length > 0 && <NextStepChips chips={chips} onPick={onPickProduct} />}
+      </div>
     );
   }
 
