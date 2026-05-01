@@ -321,6 +321,16 @@ export default function Home() {
   const [pendingConfirm, setPendingConfirm] = useState<{ planLabel: string; price?: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showArchitectureSheet, setShowArchitectureSheet] = useState(false);
+  // Sticky "ever authenticated this session" flag. Once we've seen an
+  // authenticated session, transient `authStatus === "loading"` flickers
+  // (caused by NextAuth's update() call after a servicing action persists
+  // a loan override) should NOT dump the user back to the loading screen
+  // — that unmounts the whole chat surface and resets scroll position to
+  // the top, stranding the user above the new success card.
+  const [hasAuthedOnce, setHasAuthedOnce] = useState(false);
+  useEffect(() => {
+    if (authStatus === "authenticated") setHasAuthedOnce(true);
+  }, [authStatus]);
   // Tracks the loan_id that was just touched by an authorized servicing action.
   // Manage screen reads this to surface a "Just updated" pill on the right card.
   const [recentlyUpdatedLoanId, setRecentlyUpdatedLoanId] = useState<string | null>(null);
@@ -380,7 +390,30 @@ export default function Home() {
   }, [messages]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    // Multi-pass scroll-to-bottom: a single smooth scroll targets the
+    // scrollHeight at the moment the effect fires, but several things
+    // can grow scrollHeight afterward — late-loading merchant logos,
+    // conditional renders (next-step chips appearing under a success
+    // card), and re-renders triggered by NextAuth session updates.
+    // We chase the bottom across those settling events so the user
+    // never lands halfway up the freshly appended message.
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    const r1 = requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    });
+    const t1 = setTimeout(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    }, 350);
+    const t2 = setTimeout(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    }, 800);
+    return () => {
+      cancelAnimationFrame(r1);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [messages]);
 
   useEffect(() => {
@@ -583,7 +616,14 @@ export default function Home() {
   const last = messages[messages.length - 1];
   const showThinking = streaming && last?.role === "assistant" && last.blocks.length === 0;
 
-  if (!hydrated || authStatus === "loading") {
+  // Show the loading wordmark only on initial bootstrap. Once we've ever
+  // been authenticated this session, any subsequent "loading" status is a
+  // transient session-refresh (e.g. after updateSession persists a loan
+  // override) and we should NOT unmount the chat — it loses scroll
+  // position. See hasAuthedOnce above.
+  const showBootstrapLoader =
+    !hydrated || (authStatus === "loading" && !hasAuthedOnce);
+  if (showBootstrapLoader) {
     return (
       <PhoneFrame>
         <div className="flex-1 flex items-center justify-center" style={{ background: BG }}>
