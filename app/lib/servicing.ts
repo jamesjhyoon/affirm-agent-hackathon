@@ -640,3 +640,247 @@ export function servicingTriageOptions(_input: {
     policy_note: `Reschedule allowed up to ${RESCHEDULE_POLICY.windowDays} days past due, ${RESCHEDULE_POLICY.maxPerCycle} per billing cycle.`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cross-plan optimization (extra-cash allocation)
+// ---------------------------------------------------------------------------
+
+export type OptimizationStrategy =
+  | "save_interest"
+  | "clear_plan"
+  | "free_cash_flow";
+
+export type OptimizationOption = {
+  /** 1-indexed rank within the result set. The recommended option is rank 1. */
+  rank: number;
+  strategy: OptimizationStrategy;
+  loan_id: string;
+  merchant: string;
+  merchant_domain: string;
+  apr_bps: number;
+  /** Dollars actually applied to this loan (≤ amount_usd, ≤ balance). */
+  apply_amount_usd: number;
+  /** Money left over from amount_usd after applying. Useful when a plan is fully cleared. */
+  leftover_usd: number;
+  remaining_balance_after_usd: number;
+  /** True if this option fully closes the plan. */
+  closes_plan: boolean;
+  /**
+   * Estimated interest saved vs continuing to pay normally.
+   *   est_interest_saved = apply_amount * apr * remaining_term_years * 0.5
+   * The 0.5 captures the "money applied today reduces the AVERAGE balance
+   * over the remaining term, not the full balance" intuition. Approximate;
+   * good enough to rank options. Always 0 for 0% APR plans.
+   */
+  est_interest_saved_usd: number;
+  /**
+   * Estimated months knocked off the original term:
+   *   floor(apply_amount / monthly_payment)
+   * Conservative — ignores compounding amortization effects.
+   */
+  est_months_saved: number;
+  headline: string;
+  rationale: string;
+};
+
+export type ServicingOptimizationResult =
+  | {
+      ok: true;
+      hypothetical_amount_usd: number;
+      options: OptimizationOption[];
+      policy_note: string;
+    }
+  | { error: string; message: string };
+
+/** Default amount when the user is vague ("where should I put extra cash?"). */
+const DEFAULT_OPTIMIZATION_AMOUNT_USD = 500;
+
+/**
+ * Cross-plan extra-cash optimizer. Given a hypothetical extra dollar amount,
+ * returns three ranked allocation options — each driven by a DIFFERENT goal
+ * the user might have:
+ *
+ *   1. save_interest: maximize $ saved on interest. Picks the highest-APR
+ *      plan and applies as much as possible. Economically optimal answer.
+ *      For any user with a 21.99% APR loan and a 0% APR loan, this should
+ *      always win on raw math.
+ *
+ *   2. clear_plan: knock a plan off the board entirely. Picks the smallest
+ *      plan that fits within amount_usd. Psychologically the move most users
+ *      actually make (debt-snowball preference). Surfaced because the user
+ *      may explicitly want this.
+ *
+ *   3. free_cash_flow: reduce near-term cash burden. Picks the plan that's
+ *      due soonest and applies as many monthly payments as the amount can
+ *      cover. Best when the user is cash-tight in the next 1-2 weeks.
+ *
+ * Why this exists at all: this is the canonical decision the Manage tab
+ * cannot perform. Manage shows balances, dates, and APRs separately. It
+ * cannot rank "where should I put $500" because the right answer depends
+ * on the user's goal — and only the agent can ask one sentence to figure
+ * out which goal applies. The card surfaces all three so the user picks
+ * with full visibility into the trade-off.
+ *
+ * The math is intentionally simple. Real shipping would route through the
+ * existing servicing payoff/installment APIs and use canonical amortization
+ * schedules; the demo's job is to show the reasoning shape, not the
+ * accounting precision.
+ */
+export function servicingOptimizationOptions(input: {
+  amount_usd?: number;
+}): ServicingOptimizationResult {
+  const plans = DEMO_USER.activePlans;
+  if (plans.length === 0) {
+    return { error: "NO_PLANS", message: "No active plans on this account." };
+  }
+
+  const amount = Math.max(
+    1,
+    Math.round((input.amount_usd ?? DEFAULT_OPTIMIZATION_AMOUNT_USD) * 100) / 100
+  );
+
+  type PlanLite = {
+    id: string;
+    merchant: string;
+    merchant_domain: string;
+    balance: number;
+    monthly: number;
+    months_remaining: number;
+    apr_bps: number;
+    next_due_iso: string;
+  };
+
+  const lite: PlanLite[] = plans.map((p) => ({
+    id: p.id,
+    merchant: p.merchant,
+    merchant_domain: p.merchantDomain,
+    balance: p.balance,
+    monthly: p.monthlyPayment,
+    months_remaining: p.termMonthsRemaining,
+    apr_bps: p.aprBps,
+    next_due_iso: p.nextPaymentDueISO,
+  }));
+
+  // Strategy 1: save the most on interest → highest APR (ties → larger balance).
+  const interestRanked = [...lite].sort((a, b) => {
+    if (b.apr_bps !== a.apr_bps) return b.apr_bps - a.apr_bps;
+    return b.balance - a.balance;
+  });
+
+  // Strategy 2: clear a plan entirely. Prefer the smallest plan whose balance
+  // fits inside `amount`. If none fits, fall back to "smallest plan" so the
+  // user gets the closest-to-clearing option.
+  const closableSorted = [...lite]
+    .filter((p) => p.balance <= amount)
+    .sort((a, b) => a.balance - b.balance);
+  const clearTarget =
+    closableSorted[0] ?? [...lite].sort((a, b) => a.balance - b.balance)[0];
+
+  // Strategy 3: free near-term cash → soonest due (ties → larger monthly).
+  const cashFlowRanked = [...lite].sort((a, b) => {
+    if (a.next_due_iso !== b.next_due_iso)
+      return a.next_due_iso.localeCompare(b.next_due_iso);
+    return b.monthly - a.monthly;
+  });
+
+  const buildOption = (
+    strategy: OptimizationStrategy,
+    target: PlanLite
+  ): Omit<OptimizationOption, "rank" | "headline" | "rationale"> => {
+    const apply = Math.min(amount, target.balance);
+    const remaining = Math.max(0, Math.round((target.balance - apply) * 100) / 100);
+    const closes = remaining === 0;
+    const aprDecimal = target.apr_bps / 10000;
+    const yearsRemaining = target.months_remaining / 12;
+    const interestSaved =
+      target.apr_bps > 0
+        ? Math.round(apply * aprDecimal * yearsRemaining * 0.5 * 100) / 100
+        : 0;
+    const monthsSaved = Math.floor(apply / target.monthly);
+    return {
+      strategy,
+      loan_id: target.id,
+      merchant: target.merchant,
+      merchant_domain: target.merchant_domain,
+      apr_bps: target.apr_bps,
+      apply_amount_usd: Math.round(apply * 100) / 100,
+      leftover_usd: Math.round((amount - apply) * 100) / 100,
+      remaining_balance_after_usd: remaining,
+      closes_plan: closes,
+      est_interest_saved_usd: interestSaved,
+      est_months_saved: monthsSaved,
+    };
+  };
+
+  const aprPctLabel = (bps: number) =>
+    bps === 0 ? "0% APR" : `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}% APR`;
+  const moneyShort = (n: number) =>
+    `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+  // Strategy 1 framing
+  const interestTarget = interestRanked[0];
+  const interestPart = buildOption("save_interest", interestTarget);
+  const interestOption: OptimizationOption = {
+    ...interestPart,
+    rank: 0,
+    headline:
+      interestTarget.apr_bps > 0
+        ? `Save ~${moneyShort(interestPart.est_interest_saved_usd)} in interest on ${interestTarget.merchant}`
+        : `${interestTarget.merchant} is your largest balance`,
+    rationale:
+      interestTarget.apr_bps > 0
+        ? `${interestTarget.merchant} is at ${aprPctLabel(interestTarget.apr_bps)} — your most expensive plan. Putting ${moneyShort(interestPart.apply_amount_usd)} against principal cuts the average balance carrying interest, saving roughly ${moneyShort(interestPart.est_interest_saved_usd)} over the remaining ${interestTarget.months_remaining} months.`
+        : `Every active plan is at 0% APR or below ${aprPctLabel(interestTarget.apr_bps)}, so there's no interest to save here. ${interestTarget.merchant} has the largest principal, so it's the biggest balance reduction.`,
+  };
+
+  // Strategy 2 framing
+  const clearPart = buildOption("clear_plan", clearTarget);
+  const clearOption: OptimizationOption = {
+    ...clearPart,
+    rank: 0,
+    headline: clearPart.closes_plan
+      ? `Close ${clearTarget.merchant} today`
+      : `Knock down ${clearTarget.merchant} the most`,
+    rationale: clearPart.closes_plan
+      ? `${moneyShort(clearPart.apply_amount_usd)} fully clears ${clearTarget.merchant}. One fewer plan on your account, ${moneyShort(clearTarget.monthly)}/mo back in your budget, and ${moneyShort(clearPart.leftover_usd)} left to apply elsewhere.`
+      : `${clearTarget.merchant} has the smallest balance left (${moneyShort(clearTarget.balance)}). Putting ${moneyShort(clearPart.apply_amount_usd)} against it cuts ~${clearPart.est_months_saved} months off and gets you closest to closing it.`,
+  };
+
+  // Strategy 3 framing
+  const cashTarget = cashFlowRanked[0];
+  const cashPart = buildOption("free_cash_flow", cashTarget);
+  const cashOption: OptimizationOption = {
+    ...cashPart,
+    rank: 0,
+    headline: `Cover the next ${cashPart.est_months_saved} ${cashTarget.merchant} payment${cashPart.est_months_saved === 1 ? "" : "s"}`,
+    rationale: `${cashTarget.merchant} is your soonest payment (${moneyShort(cashTarget.monthly)} due ${labelForIso(cashTarget.next_due_iso)}). Applying ${moneyShort(cashPart.apply_amount_usd)} covers ~${cashPart.est_months_saved} upcoming installment${cashPart.est_months_saved === 1 ? "" : "s"}, which is the fastest way to give yourself breathing room next week.`,
+  };
+
+  // Order: 1) save_interest (economically optimal default), 2) clear_plan,
+  // 3) free_cash_flow. Same plan can appear in two slots if the math collapses
+  // — that's deliberate; we still want the user to see the goal-framed
+  // rationale even when the merchant is the same.
+  const ordered: OptimizationOption[] = [
+    interestOption,
+    clearOption,
+    cashOption,
+  ].map((o, i) => ({ ...o, rank: i + 1 }));
+
+  return {
+    ok: true as const,
+    hypothetical_amount_usd: amount,
+    options: ordered,
+    policy_note:
+      "Each option applies to principal and is reversible until you tap Confirm with Face ID. Estimates are approximate; the executor will surface exact numbers before you authorize.",
+  };
+}
+
+function labelForIso(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}

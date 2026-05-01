@@ -19,6 +19,14 @@ export type ActivePlan = {
   nextPaymentDate: string;
   /** ISO date for servicing mock engine */
   nextPaymentDueISO: string;
+  /**
+   * Plan APR in basis points. Used by the optimization engine to rank
+   * plans by interest-saving impact. 0 means a Pay-in-4 / 0% APR plan.
+   * Real shipping would source this from the loan record, not the demo
+   * mock — keeping the field shape mock-only-aware so the boundary stays
+   * obvious during a code review.
+   */
+  aprBps: number;
   /** Optional fixed payoff quote for demos. If absent, computed from balance. */
   payoffQuoteUsd?: number;
   /** Days past original due that reschedule is allowed (slide window) */
@@ -139,6 +147,8 @@ export const DEMO_USER: DemoUser = {
       balance: 842,
       monthlyPayment: 78,
       termMonthsRemaining: 11,
+      // 12-month financed plan on a Bike+; mid-tier APR.
+      aprBps: 1500,
       nextPaymentDate: PELOTON_DUE.label,
       nextPaymentDueISO: PELOTON_DUE.iso,
       rescheduleMaxDaysFromDue: RESCHEDULE_WINDOW_DAYS,
@@ -156,6 +166,11 @@ export const DEMO_USER: DemoUser = {
       balance: 412,
       monthlyPayment: 63.12,
       termMonthsRemaining: 6,
+      // Promotional 0% APR plan — common for apparel under ~$500.
+      // This is what makes "save interest by paying Nike off" a non-answer:
+      // there's no interest to save here. The optimization engine has to
+      // recognize that and route the recommendation accordingly.
+      aprBps: 0,
       nextPaymentDate: NIKE_DUE.label,
       nextPaymentDueISO: NIKE_DUE.iso,
       rescheduleMaxDaysFromDue: RESCHEDULE_WINDOW_DAYS,
@@ -176,6 +191,11 @@ export const DEMO_USER: DemoUser = {
       balance: 1380,
       monthlyPayment: 121.04,
       termMonthsRemaining: 12,
+      // Travel financing — typical APR is higher than retail. 21.99% is the
+      // most expensive debt in this account, so it's the right answer when
+      // the user says "save the most on interest." Drives a clear,
+      // economically-correct recommendation in the optimization card.
+      aprBps: 2199,
       nextPaymentDate: MARRIOTT_DUE.label,
       nextPaymentDueISO: MARRIOTT_DUE.iso,
       rescheduleMaxDaysFromDue: RESCHEDULE_WINDOW_DAYS,

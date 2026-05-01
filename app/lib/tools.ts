@@ -1,7 +1,7 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { DEMO_USER } from "./mockData";
 import {
   servicingOpenRefundCase,
+  servicingOptimizationOptions,
   servicingPayoffQuote,
   servicingReschedulePreview,
   servicingTriageOptions,
@@ -19,155 +19,18 @@ import {
   searchProductsViaWeb,
 } from "./webSearch";
 import { sendPurchaseEmail } from "./email";
+import { TOOL_DEFINITIONS } from "./toolSchemas";
+
+// Tool schemas live in toolSchemas.ts so the eval suite can import them
+// without dragging in runtime side effects (Resend, Anthropic web-search
+// client, etc.). Re-exported here so existing call sites (the chat route)
+// don't have to change their import path.
+export { TOOL_DEFINITIONS };
 
 export type ToolContext = {
   userEmail: string;
   firstName: string;
 };
-
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
-  {
-    name: "search_products",
-    description:
-      "Search for real products across Affirm's merchant network. Affirm works with hundreds of thousands of merchants — this tool can find real listings at any of them. Fast path (~1s) for 10 Shopify-integrated merchants (Allbirds, Rothy's, Taylor Stitch, Everlane, Casper, Tuft & Needle, Brooklinen, Parachute, Therabody, Jackery). For any other merchant or the open web, it uses real-time web search (~5-15s). Returns products with title, merchant, price, and image URL.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description:
-            "What the user wants to buy (e.g. 'running shoes', 'mattress', 'portable power station'). Be specific.",
-        },
-        max_price: {
-          type: "number",
-          description: "Optional maximum price filter in USD.",
-        },
-        merchant: {
-          type: "string",
-          description:
-            "Optional merchant to restrict the search to. Accepts a name ('Peloton', 'Amazon', 'Best Buy'), an Affirm merchant id ('peloton'), or a domain ('amazon.com'). Leave empty for the best retailer across the web.",
-        },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "list_merchants",
-    description:
-      "List merchants in Affirm's network. Use this when the user asks what stores they can shop at, or when a product search returns nothing and you want to suggest categories to browse.",
-    input_schema: {
-      type: "object",
-      properties: {
-        category: {
-          type: "string",
-          description:
-            "Optional category filter (e.g. 'Shoes', 'Mattresses', 'Home', 'Fitness', 'Apparel', 'Electronics', 'Travel', 'Wellness', 'Outdoor', 'Beauty', 'Jewelry').",
-        },
-      },
-    },
-  },
-  {
-    name: "check_affirm_capacity",
-    description:
-      "Check the user's Affirm account: available credit limit and active payment plans. Call this before recommending purchases to make sure they're within the user's capacity.",
-    input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "calculate_affirm_terms",
-    description:
-      "Given a product price, return available Affirm payment plan options (pay in 4, 6mo, 12mo) with monthly payment and APR.",
-    input_schema: {
-      type: "object",
-      properties: {
-        price: {
-          type: "number",
-          description: "Total price of the product in USD",
-        },
-      },
-      required: ["price"],
-    },
-  },
-  {
-    name: "execute_purchase",
-    description:
-      "Complete the purchase. Requires the product_id (from search_products) and the chosen plan_id (from calculate_affirm_terms). Only call this after the user has explicitly confirmed.",
-    input_schema: {
-      type: "object",
-      properties: {
-        product_id: { type: "string", description: "Product ID from search_products" },
-        plan_id: { type: "string", description: "Plan ID from calculate_affirm_terms" },
-      },
-      required: ["product_id", "plan_id"],
-    },
-  },
-  {
-    name: "servicing_payoff_quote",
-    description:
-      "Get a deterministic payoff quote for an existing installment loan (merchant installment plans). Call before executing payoff. Amounts come from servicing mock data — not inferred by the LLM.",
-    input_schema: {
-      type: "object",
-      properties: {
-        loan_id: {
-          type: "string",
-          description:
-            "Loan id from check_affirm_capacity (e.g. plan_peloton). Optional if merchant_hint is enough.",
-        },
-        merchant_hint: {
-          type: "string",
-          description:
-            "Merchant name substring if user names the purchase (Peloton, Nike, Marriott).",
-        },
-      },
-    },
-  },
-  {
-    name: "servicing_reschedule_preview",
-    description:
-      "Preview reschedule eligibility for the next installment: allowed target dates and policy blocks (e.g. RSH-MAX_WINDOW, RSH-CYCLE_LIMIT). Surface this card and let the user tap Confirm with biometric to actually execute.",
-    input_schema: {
-      type: "object",
-      properties: {
-        loan_id: { type: "string" },
-        merchant_hint: { type: "string" },
-        requested_date_iso: {
-          type: "string",
-          description: "Optional YYYY-MM-DD if user asked for a specific date — checks against policy window.",
-        },
-      },
-    },
-  },
-  {
-    name: "servicing_triage_options",
-    description:
-      "Cross-plan triage when the user describes a cash-flow constraint ('I'm short this month', 'tight on cash', 'going to be short', 'can't make all my payments', 'need more time'). Returns ALL active plans sorted by next due date with per-plan reschedule eligibility (which ones haven't used their cycle reschedule yet) and a deterministic recommendation. The card lets the user see every upcoming payment at once and shows which one to move first. Always call this for cash-constraint intents BEFORE recommending a specific action — never guess across plans yourself.",
-    input_schema: {
-      type: "object",
-      properties: {
-        constraint: {
-          type: "string",
-          description:
-            "Optional short label of what the user said (e.g. 'short this month'). Doesn't affect the math, just tells the policy engine why triage was requested.",
-        },
-      },
-    },
-  },
-  {
-    name: "servicing_refund_case",
-    description:
-      "Open a refund case for an existing loan. Affirm doesn't issue refunds — the merchant does — but Affirm pauses autopay during the refund window and adjusts the loan principal once the refund posts. Returns a structured case card with merchant contact deep-link and what happens to the loan. Call this when the user says 'I need a refund', 'refund my X', 'I want to return X', etc.",
-    input_schema: {
-      type: "object",
-      properties: {
-        loan_id: { type: "string" },
-        merchant_hint: {
-          type: "string",
-          description:
-            "Merchant name substring (Peloton, Nike, Marriott).",
-        },
-      },
-    },
-  },
-];
 
 type SearchProductsInput = {
   query: string;
@@ -185,6 +48,7 @@ type ServicingReschedulePreviewInput = {
 };
 type ServicingRefundCaseInput = { loan_id?: string; merchant_hint?: string };
 type ServicingTriageInput = { constraint?: string };
+type ServicingOptimizationInput = { amount_usd?: number };
 
 function toClientProduct(p: UnifiedProduct) {
   return {
@@ -224,7 +88,6 @@ async function searchProducts(input: SearchProductsInput) {
     });
     source = products.length > 0 ? "shopify" : "none";
   } else if (resolved) {
-    // Try dynamic Shopify detection before falling back to web search
     if (resolved.domain) {
       try {
         products = await searchShopifyByDomain(
@@ -556,6 +419,8 @@ export async function dispatchTool(
       return servicingOpenRefundCase(input as ServicingRefundCaseInput);
     case "servicing_triage_options":
       return servicingTriageOptions(input as ServicingTriageInput);
+    case "servicing_optimization_options":
+      return servicingOptimizationOptions(input as ServicingOptimizationInput);
     // Note: servicing execute paths are intentionally NOT exposed to the LLM.
     // They live behind /api/servicing/execute and require a verified WebAuthn
     // assertion. The agent surfaces quote/preview cards; the user authorizes

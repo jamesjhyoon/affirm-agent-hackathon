@@ -64,27 +64,30 @@ const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   servicing_reschedule_preview: { running: "Checking reschedule rules", done: "Reschedule options ready" },
   servicing_refund_case: { running: "Opening refund case", done: "Refund case opened" },
   servicing_triage_options: { running: "Checking upcoming payments", done: "Triaged your plans" },
+  servicing_optimization_options: { running: "Ranking allocation options", done: "Best-use options ready" },
 };
 
 /**
- * Demo openers — order matters. The four prompts are arranged so a judge
+ * Demo openers — order matters. The five prompts are arranged so a judge
  * scanning the screen for 30 seconds can see the entire thesis land:
  *
- *   1. Cross-plan triage. "I'm going to be short this month" is
- *      structurally impossible for the Manage tab — it requires reading
- *      every plan's state, checking per-plan cycle usage, sorting by
- *      leverage, and recommending a specific move. This is the value-prop
- *      opener.
+ *   1. Cross-plan triage (cash CONSTRAINT). "I'm going to be short this
+ *      month" requires reading every plan's state, checking per-plan
+ *      cycle usage, sorting by leverage, and recommending a specific
+ *      move. Structurally impossible in the Manage tab.
  *
- *   2 & 3. Same-intent symmetric pose. Identical phrasing on two plans,
+ *   2. Cross-plan optimization (extra CASH). "I have an extra $500"
+ *      requires ranking plans by interest savings, balance-to-clear, and
+ *      cash-flow impact — three different right answers depending on
+ *      goal. Also impossible in Manage. Symmetric with #1: cross-plan
+ *      reasoning at both ends of the cash-flow spectrum.
+ *
+ *   3 & 4. Same-intent symmetric pose. Identical phrasing on two plans,
  *      opposite outcomes — Peloton (cycle 0) approves, Nike (cycle 1
- *      already used) denies. Same intent, plan-state-driven outcome.
- *      That's the "approved vs denied based on real plan state" proof
- *      point judges asked for. The contrast doesn't come from request
- *      shape ("you asked for 30 days"); it comes from where each loan
- *      sits in its billing cycle.
+ *      already used) denies. The "approved vs denied based on real plan
+ *      state" proof point.
  *
- *   4. A different action primitive (payoff) so the demo doesn't look
+ *   5. A different action primitive (payoff) so the demo doesn't look
  *      like one tool rephrased four ways.
  *
  * Refund flow still works if a judge types "refund my Nike order" — it's
@@ -93,6 +96,7 @@ const TOOL_LABELS: Record<string, { running: string; done: string }> = {
  */
 const SUGGESTIONS = [
   "I'm going to be a little short this month — what are my options?",
+  "I have an extra $500 — where should I put it?",
   "Move my Peloton payment a week out",
   "Move my Nike payment a week out",
   "Pay off my Peloton loan in full",
@@ -2329,6 +2333,34 @@ type ServicingTriageResult =
     }
   | { error: string; message: string };
 
+type OptimizationStrategy = "save_interest" | "clear_plan" | "free_cash_flow";
+
+type OptimizationOption = {
+  rank: number;
+  strategy: OptimizationStrategy;
+  loan_id: string;
+  merchant: string;
+  merchant_domain: string;
+  apr_bps: number;
+  apply_amount_usd: number;
+  leftover_usd: number;
+  remaining_balance_after_usd: number;
+  closes_plan: boolean;
+  est_interest_saved_usd: number;
+  est_months_saved: number;
+  headline: string;
+  rationale: string;
+};
+
+type ServicingOptimizationResult =
+  | {
+      ok: true;
+      hypothetical_amount_usd: number;
+      options: OptimizationOption[];
+      policy_note: string;
+    }
+  | { error: string; message: string };
+
 function formatMoney(n: number) {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -3018,6 +3050,164 @@ function ServicingTriageCard({
   );
 }
 
+/**
+ * Cross-plan optimization card. Surfaced when the user asks where to put
+ * EXTRA cash ("I have an extra $500 — what should I do with it?"). Mirror
+ * of the triage card on the cash-surplus side.
+ *
+ * NOTE — why this response type also has no equivalent in the Manage tab:
+ * Manage shows balances, APRs, and dates as separate columns. To answer
+ * "where should I put $500" the user has to visually scan three columns
+ * across N rows AND apply a goal weighting in their head — and most users
+ * don't know that "highest APR" is usually the right economic answer. The
+ * agent does the cross-column ranking + goal framing in one card so the
+ * user picks by intent ("save interest" / "close a plan" / "free cash
+ * flow"), not by spreadsheet logic.
+ */
+function ServicingOptimizationCard({
+  data,
+  onPick,
+}: {
+  data: Extract<ServicingOptimizationResult, { ok: true }>;
+  onPick: (text: string) => void;
+}) {
+  const options = data.options;
+  const top = options[0];
+  return (
+    <div className="rounded-2xl bg-white border border-gray-200 overflow-hidden shadow-sm">
+      <div
+        className="px-4 py-3 text-white"
+        style={{
+          background: `linear-gradient(135deg, ${ACCENT} 0%, #4A3BB8 100%)`,
+        }}
+      >
+        <div className="text-[10px] uppercase tracking-wide opacity-80 font-semibold">
+          Best use of {formatMoney(data.hypothetical_amount_usd)}
+        </div>
+        <div className="text-[14px] mt-0.5 opacity-95 leading-snug">
+          Three options, three goals. Tap the one that fits.
+        </div>
+      </div>
+
+      <ul className="divide-y divide-gray-100">
+        {options.map((o) => {
+          const strategyLabel = strategyLabelFor(o.strategy);
+          const strategyTone = strategyToneFor(o.strategy);
+          const aprLabel =
+            o.apr_bps === 0
+              ? "0% APR"
+              : `${(o.apr_bps / 100).toFixed(o.apr_bps % 100 === 0 ? 0 : 2)}% APR`;
+          return (
+            <li key={`${o.strategy}-${o.loan_id}`} className="px-4 py-3">
+              <div className="flex items-start gap-3">
+                <MerchantLogo
+                  domain={o.merchant_domain}
+                  name={o.merchant}
+                  size={36}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded ${strategyTone.chip}`}
+                    >
+                      {strategyLabel}
+                    </span>
+                    {o.closes_plan && (
+                      <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                        Closes plan
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[14px] font-semibold text-[#0A2540] mt-1 leading-snug">
+                    {o.headline}
+                  </div>
+                  <div className="text-[12px] text-gray-600 mt-1 leading-snug">
+                    {o.rationale}
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-gray-500 mt-1.5 flex-wrap">
+                    <span>
+                      Apply{" "}
+                      <span className="font-semibold text-[#0A2540]">
+                        {formatMoney(o.apply_amount_usd)}
+                      </span>{" "}
+                      to {o.merchant}
+                    </span>
+                    <span className="text-gray-300">·</span>
+                    <span>{aprLabel}</span>
+                    {o.est_interest_saved_usd > 0 && (
+                      <>
+                        <span className="text-gray-300">·</span>
+                        <span>
+                          Save ~
+                          <span className="font-semibold text-emerald-700">
+                            {formatMoney(o.est_interest_saved_usd)}
+                          </span>{" "}
+                          interest
+                        </span>
+                      </>
+                    )}
+                    {o.est_months_saved > 0 && (
+                      <>
+                        <span className="text-gray-300">·</span>
+                        <span>
+                          ~{o.est_months_saved} mo{o.est_months_saved === 1 ? "" : "s"} sooner
+                        </span>
+                      </>
+                    )}
+                    {o.leftover_usd > 0.005 && (
+                      <>
+                        <span className="text-gray-300">·</span>
+                        <span>
+                          {formatMoney(o.leftover_usd)} left over
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPick(
+                        o.closes_plan
+                          ? `Pay off my ${o.merchant} loan in full`
+                          : `Pay an extra ${formatMoney(o.apply_amount_usd)} toward my ${o.merchant} plan`
+                      )
+                    }
+                    className="mt-2.5 text-[12px] font-semibold text-white px-3.5 py-1.5 rounded-full hover:opacity-90 transition"
+                    style={{
+                      background:
+                        top && top.rank === o.rank ? ACCENT : "#0A2540",
+                    }}
+                  >
+                    {o.closes_plan
+                      ? `Pay off ${o.merchant}`
+                      : `Apply to ${o.merchant}`}
+                  </button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="px-4 py-2 text-[10px] text-gray-400 leading-snug">
+        {data.policy_note}
+      </div>
+    </div>
+  );
+}
+
+function strategyLabelFor(s: OptimizationStrategy): string {
+  if (s === "save_interest") return "Save interest";
+  if (s === "clear_plan") return "Close a plan";
+  return "Free cash flow";
+}
+
+function strategyToneFor(s: OptimizationStrategy): { chip: string } {
+  if (s === "save_interest") return { chip: "bg-violet-100 text-violet-800" };
+  if (s === "clear_plan") return { chip: "bg-emerald-100 text-emerald-800" };
+  return { chip: "bg-blue-100 text-blue-800" };
+}
+
 function AssistantBlockView({
   block,
   onPickPlan,
@@ -3178,6 +3368,23 @@ function AssistantBlockView({
           <div className="space-y-2">
             <ToolBadge block={block} />
             <ServicingTriageCard data={r} onPick={onPickProduct} />
+          </div>
+        );
+    }
+    if (block.name === "servicing_optimization_options") {
+      const r = block.result as ServicingOptimizationResult;
+      if ("error" in r && r.error)
+        return (
+          <div className="space-y-2">
+            <ToolBadge block={block} />
+            <ServicingErrorCard title="Optimization" message={r.message ?? String(r.error)} />
+          </div>
+        );
+      if ("ok" in r && r.ok)
+        return (
+          <div className="space-y-2">
+            <ToolBadge block={block} />
+            <ServicingOptimizationCard data={r} onPick={onPickProduct} />
           </div>
         );
     }
