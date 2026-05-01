@@ -12,6 +12,20 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html, body {
+  /*
+   * Lock the document to the visual viewport. The phone-shell layout owns
+   * its own scrollable region (<main> in the chat view). Without this,
+   * iOS Safari can decide to scroll the document itself when the address
+   * bar collapses, when an element is removed mid-animation, or when
+   * focus shifts after a tap — manifesting as the chat appearing to
+   * "jump to the top" after a successful authorization.
+   */
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   background: #D8D9DF;
   color: #0a2540;

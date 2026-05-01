@@ -340,6 +340,12 @@ export default function Home() {
     Record<string, BiometricExecutionState>
   >({});
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Sentinel rendered at the end of the chat list. We scroll THIS into
+  // view (rather than computing scrollHeight ourselves) so the browser
+  // handles all the layout/timing edge cases — late-loading images,
+  // CSS animations, conditional renders that grow the message after
+  // mount. Far more reliable than chained setTimeout calls.
+  const endRef = useRef<HTMLDivElement>(null);
 
   const searchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const authError = searchParams?.get("error") ?? undefined;
@@ -390,29 +396,40 @@ export default function Home() {
   }, [messages]);
 
   useEffect(() => {
-    // Multi-pass scroll-to-bottom: a single smooth scroll targets the
-    // scrollHeight at the moment the effect fires, but several things
-    // can grow scrollHeight afterward — late-loading merchant logos,
-    // conditional renders (next-step chips appearing under a success
-    // card), and re-renders triggered by NextAuth session updates.
-    // We chase the bottom across those settling events so the user
-    // never lands halfway up the freshly appended message.
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    const r1 = requestAnimationFrame(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
-    });
-    const t1 = setTimeout(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
-    }, 350);
-    const t2 = setTimeout(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
-    }, 800);
+    // Sentinel-based scroll-to-bottom. We scroll the end-of-list
+    // sentinel into view, then keep scrolling it into view for ~1500ms
+    // every time the content size changes. ResizeObserver fires for
+    // any reflow inside the chat — late-loading merchant logos, the
+    // success card replacing the action button, next-step chips
+    // appearing, NextAuth session-driven re-renders. This is strictly
+    // more reliable than chained setTimeout calls because it reacts to
+    // ACTUAL layout settling rather than guessing at it.
+    const sentinel = endRef.current;
+    const container = scrollRef.current;
+    if (!sentinel || !container) return;
+
+    let cancelled = false;
+    const scrollToEnd = (behavior: ScrollBehavior) => {
+      if (cancelled) return;
+      sentinel.scrollIntoView({ block: "end", behavior });
+    };
+
+    scrollToEnd("smooth");
+    const raf = requestAnimationFrame(() => scrollToEnd("auto"));
+
+    const ro = new ResizeObserver(() => scrollToEnd("auto"));
+    if (container.firstElementChild) ro.observe(container.firstElementChild);
+    ro.observe(sentinel);
+
+    const stopTimer = setTimeout(() => {
+      ro.disconnect();
+    }, 1500);
+
     return () => {
-      cancelAnimationFrame(r1);
-      clearTimeout(t1);
-      clearTimeout(t2);
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(stopTimer);
+      ro.disconnect();
     };
   }, [messages]);
 
@@ -738,7 +755,16 @@ export default function Home() {
           </div>
         </div>
 
-        <main ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <main ref={scrollRef} className="flex-1 overflow-y-auto">
+          {/*
+           * Single inner wrapper holds the whole list. We attach a
+           * ResizeObserver to this element so ANY height change inside
+           * the chat (new message, image load, success card replacing
+           * an action card, chips appearing) triggers another scroll-
+           * to-bottom pass. Padding lives here, not on <main>, so the
+           * observer's target is the natural content box.
+           */}
+          <div className="px-4 py-4 space-y-4">
           {messages.length === 0 && <EmptyState onPick={send} />}
 
           {messages.map((msg, i) => {
@@ -788,6 +814,15 @@ export default function Home() {
               </div>
             </div>
           )}
+
+          {/*
+           * End-of-list sentinel. The scroll-to-bottom effect targets
+           * THIS element via scrollIntoView. Keeping it as a real DOM
+           * node (rather than computing scrollHeight ourselves) lets
+           * the browser handle all the layout edge cases for free.
+           */}
+          <div ref={endRef} aria-hidden="true" />
+          </div>
         </main>
 
         <footer className="border-t border-gray-200/80 px-4 py-3 bg-white">
